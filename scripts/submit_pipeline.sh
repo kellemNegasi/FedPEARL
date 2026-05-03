@@ -20,26 +20,37 @@ Environment variables:
                                     Bundled persona config used only when PERSONA_ASSIGNMENT_POLICY=fixed.
   PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
   PERSONA_ASSIGNMENT_ALPHA=
-  TRAIN_ROUNDS=10
-  TRAIN_EPOCHS=5
+  INSTANCE_TEST_SIZE=0.2
+  INSTANCE_VALIDATION_SIZE=0.1
+  TRAIN_ROUNDS=200
+  TRAIN_EPOCHS=10
   TRAIN_BATCH_SIZE=2048
   TRAIN_LEARNING_RATE=0.02
   TRAIN_SVM_C=0.5
   TRAIN_SVM_INTERCEPT_SCALING=1.0
-  SKIP_LABELING=1
-  CLUSTERING_K=3
-  CLUSTERING_REPRESENTATION=model
-  CLUSTERING_WARMUP_ROUNDS=0
-  CLUSTERING_FREEZE_PCA_AFTER_WARMUP=0
-  CLUSTERING_ENABLE_PCA=1
-  TOP_K=1,3,5
+  SKIP_LABELING=0
+  CLUSTERING_K=2
+  CLUSTERING_REPRESENTATION=delta
+  CLUSTERING_WARMUP_ROUNDS=15
+  CLUSTERING_FREEZE_PCA_AFTER_WARMUP=1
+  CLUSTERING_ENABLE_PCA=0
+  TOP_K=1,3,5,8
 USAGE
 }
 
 RUN_IDS=(
   "federated-training-adult_income-20260425t192946577949+0000-logistic_regression-10clients-alpha1.0-seed42-dba03a50b07b"
-  "federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2"
   "federated-training-adult_income-20260426t223642651433+0000-logistic_regression-10clients-alpha0.3-seed42-e8df09baaba3"
+  "federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2"
+  "federated-training-adult_income-20260503t135153628015+0000-logistic_regression-5clients-alpha0.1-seed42-c4ce0720be13"
+  "federated-training-adult_income-20260503t135226242826+0000-logistic_regression-5clients-alpha0.3-seed42-987d584d73df"
+  "federated-training-adult_income-20260503t135259866809+0000-logistic_regression-5clients-alpha1.0-seed42-2c46959e584f"
+  "federated-training-adult_income-20260503t135335672402+0000-logistic_regression-5clients-alpha10.0-seed42-95917a12ac76"
+  "federated-training-adult_income-20260503t135410435425+0000-logistic_regression-10clients-alpha0.1-seed42-5ab9379ae09e"
+  "federated-training-adult_income-20260503t135448936944+0000-logistic_regression-10clients-alpha10.0-seed42-ff564875d681"
+  "federated-training-adult_income-20260503t135521322560+0000-logistic_regression-15clients-alpha0.1-seed42-f17b987d1290"
+  "federated-training-adult_income-20260503t135603131352+0000-logistic_regression-15clients-alpha1.0-seed42-a75fb8d8fee4"
+  "federated-training-adult_income-20260503t135645220328+0000-logistic_regression-15clients-alpha10.0-seed42-dfa15b7a087a"
 )
 
 MODE_ARG="${1:-}"
@@ -87,7 +98,7 @@ if [[ -n "$CLUSTERING_ENABLE_PCA_ARG" && ! "$CLUSTERING_ENABLE_PCA_ARG" =~ ^(0|1
   exit 2
 fi
 
-SELECTION_ID="${SELECTION_ID:-test__max-20__seed-42}"
+SELECTION_ID="${SELECTION_ID:-test__max-40__seed-42}"
 PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
 FIXED_PERSONA="${FIXED_PERSONA:-lay}"
 LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
@@ -167,7 +178,11 @@ SBATCH_SCRIPT="scripts/recommender_pipeline.sbatch"
 
 for run_id in "${RUN_IDS[@]}"; do
   for submission_mode in "${SUBMISSION_MODES[@]}"; do
-    FIXED_PERSONA="$FIXED_PERSONA" CLUSTERING_REPRESENTATION="$CLUSTERING_REPRESENTATION" sbatch \
+    FIXED_PERSONA="$FIXED_PERSONA" \
+    CLUSTERING_REPRESENTATION="$CLUSTERING_REPRESENTATION" \
+    INSTANCE_TEST_SIZE="$INSTANCE_TEST_SIZE" \
+    INSTANCE_VALIDATION_SIZE="$INSTANCE_VALIDATION_SIZE" \
+    sbatch \
       "$SBATCH_SCRIPT" \
       "$run_id" \
       "$submission_mode" \

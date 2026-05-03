@@ -398,6 +398,7 @@ def label_recommender_context(
     seed: int = 42,
     label_seed: int = 1729,
     instance_test_size: float = 0.2,
+    instance_validation_size: float = 0.1,
     instance_split_seed: int | None = None,
     tau: float | None = None,
     concentration_c: float | None = None,
@@ -515,10 +516,14 @@ def label_recommender_context(
         instance_split = split_recommender_instance_ids(
             candidates,
             test_size=instance_test_size,
+            validation_size=instance_validation_size,
             random_state=client_split_seed,
         )
         train_candidates = candidates.loc[
             candidates["dataset_index"].isin(instance_split.train_instance_ids)
+        ].copy()
+        validation_candidates = candidates.loc[
+            candidates["dataset_index"].isin(instance_split.validation_instance_ids)
         ].copy()
         test_candidates = candidates.loc[
             candidates["dataset_index"].isin(instance_split.test_instance_ids)
@@ -540,6 +545,7 @@ def label_recommender_context(
                 concentration_c=concentration_c,
             )
             train_labels, simulator_metadata = simulator_instance.label_client_candidates(train_candidates)
+            validation_labels, _ = simulator_instance.label_client_candidates(validation_candidates)
             test_labels, _ = simulator_instance.label_client_candidates(test_candidates)
             persona_metadata = None
             effective_persona_name = fixed_persona.persona
@@ -573,6 +579,9 @@ def label_recommender_context(
                 concentration_c=concentration_c,
             )
             train_labels, train_metadata = simulator_instance.label_client_candidates(train_candidates)
+            validation_labels, validation_metadata = simulator_instance.label_client_candidates(
+                validation_candidates
+            )
             test_labels, test_metadata = simulator_instance.label_client_candidates(test_candidates)
             simulator_metadata = {
                 "simulator": simulator,
@@ -580,7 +589,11 @@ def label_recommender_context(
                 "assignment_alpha": float(persona_assignment_alpha),
                 "persona_seeds": persona_seeds,
                 "sampled_client_persona": client_persona,
-                "persona": _merge_persona_simulation_metadata(train_metadata, test_metadata),
+                "persona": _merge_persona_simulation_metadata(
+                    train_metadata,
+                    validation_metadata,
+                    test_metadata,
+                ),
             }
             persona_metadata = persona_assignment_artifact["clients"][client_id] if persona_assignment_artifact else None
             effective_persona_name = output_persona_name
@@ -592,11 +605,15 @@ def label_recommender_context(
             if persona_assignment_policy == DIRICHLET_SAMPLED_PERSONA_ASSIGNMENT_POLICY:
                 train_labels = train_labels.assign(assigned_persona=client_persona)
             train_labels = train_labels.assign(split="train")
+        if not validation_labels.empty:
+            if persona_assignment_policy == DIRICHLET_SAMPLED_PERSONA_ASSIGNMENT_POLICY:
+                validation_labels = validation_labels.assign(assigned_persona=client_persona)
+            validation_labels = validation_labels.assign(split="validation")
         if not test_labels.empty:
             if persona_assignment_policy == DIRICHLET_SAMPLED_PERSONA_ASSIGNMENT_POLICY:
                 test_labels = test_labels.assign(assigned_persona=client_persona)
             test_labels = test_labels.assign(split="test")
-        labels = pd.concat([train_labels, test_labels], ignore_index=True)
+        labels = pd.concat([train_labels, validation_labels, test_labels], ignore_index=True)
         if labels.empty:
             continue
 
@@ -621,15 +638,25 @@ def label_recommender_context(
             "instance_count": int(candidates["dataset_index"].nunique()),
             "pair_count": int(len(labels)),
             "train_pair_count": int(len(train_labels)),
+            "validation_pair_count": int(len(validation_labels)),
             "test_pair_count": int(len(test_labels)),
             "generated_at": current_utc_timestamp(),
             "instance_split": {
-                "strategy": "dataset_index_train_test_split",
+                "strategy": (
+                    "dataset_index_train_validation_test_split"
+                    if instance_split.validation_instance_ids
+                    else "dataset_index_train_test_split"
+                ),
                 "test_size": float(instance_test_size),
+                "validation_size": float(instance_validation_size),
                 "random_state": int(client_split_seed),
                 "train_dataset_indices": [int(value) for value in instance_split.train_instance_ids],
+                "validation_dataset_indices": [
+                    int(value) for value in instance_split.validation_instance_ids
+                ],
                 "test_dataset_indices": [int(value) for value in instance_split.test_instance_ids],
                 "train_instance_count": int(len(instance_split.train_instance_ids)),
+                "validation_instance_count": int(len(instance_split.validation_instance_ids)),
                 "test_instance_count": int(len(instance_split.test_instance_ids)),
             },
             "simulation": simulator_metadata,
@@ -644,6 +671,7 @@ def label_recommender_context(
                 "instance_count": client_metadata["instance_count"],
                 "pair_count": client_metadata["pair_count"],
                 "train_pair_count": client_metadata["train_pair_count"],
+                "validation_pair_count": client_metadata["validation_pair_count"],
                 "test_pair_count": client_metadata["test_pair_count"],
                 "artifacts": {
                     "pairwise_labels": str(labels_path),
@@ -675,6 +703,9 @@ def label_recommender_context(
         "candidate_count": int(sum(item["candidate_count"] for item in client_summaries)),
         "pair_count": int(sum(item["pair_count"] for item in client_summaries)),
         "train_pair_count": int(sum(item["train_pair_count"] for item in client_summaries)),
+        "validation_pair_count": int(
+            sum(item["validation_pair_count"] for item in client_summaries)
+        ),
         "test_pair_count": int(sum(item["test_pair_count"] for item in client_summaries)),
         "generated_at": current_utc_timestamp(),
         "clients": client_summaries,
@@ -720,11 +751,13 @@ def _resolve_client_persona(
 
 
 def _merge_persona_simulation_metadata(
-    train_metadata: Mapping[str, Any],
-    test_metadata: Mapping[str, Any],
+    *split_metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
-    payload = dict(test_metadata or train_metadata)
-    payload["pair_count"] = int(train_metadata.get("pair_count", 0)) + int(test_metadata.get("pair_count", 0))
+    metadata_items = [dict(item) for item in split_metadata if item]
+    if not metadata_items:
+        return {}
+    payload = dict(metadata_items[-1])
+    payload["pair_count"] = int(sum(int(item.get("pair_count", 0)) for item in metadata_items))
     return payload
 
 

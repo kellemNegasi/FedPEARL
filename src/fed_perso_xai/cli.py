@@ -311,6 +311,15 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_label_parser.add_argument("--seed", type=int, default=42)
     recommender_label_parser.add_argument("--label-seed", type=int, default=1729)
     recommender_label_parser.add_argument("--instance-test-size", type=float, default=0.2)
+    recommender_label_parser.add_argument(
+        "--instance-validation-size",
+        type=float,
+        default=0.1,
+        help=(
+            "Validation split size applied to the remaining post-test instance pool. "
+            "Set to 0 to disable a separate validation split."
+        ),
+    )
     recommender_label_parser.add_argument("--instance-split-seed", type=int)
     recommender_label_parser.add_argument("--tau", type=float)
     recommender_label_parser.add_argument("--concentration-c", type=float)
@@ -753,6 +762,7 @@ def main() -> None:
             seed=args.seed,
             label_seed=args.label_seed,
             instance_test_size=args.instance_test_size,
+            instance_validation_size=args.instance_validation_size,
             instance_split_seed=args.instance_split_seed,
             tau=args.tau,
             concentration_c=args.concentration_c,

@@ -37,7 +37,7 @@ usage() {
   echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [LABEL_NAMESPACE] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
-  echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
+  echo "  SELECTION_ID defaults to test__max-40__seed-42" >&2
   echo "  LABEL_NAMESPACE defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise" >&2
   echo "  TRAIN_ROUNDS defaults to 10" >&2
   echo "  TRAIN_EPOCHS defaults to 5" >&2
@@ -64,7 +64,7 @@ fi
 
 RUN_ID="$1"
 MODE_RAW="$2"
-SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
+SELECTION_ID="${3:-${SELECTION_ID:-test__max-40__seed-42}}"
 PERSONA_ASSIGNMENT_POLICY="${17:-${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}}"
 FIXED_PERSONA="${FIXED_PERSONA:-lay}"
 LABEL_NAMESPACE_ARG="${4:-}"
@@ -180,6 +180,8 @@ echo "  label_namespace=${LABEL_NAMESPACE}"
 echo "  fixed_persona=${FIXED_PERSONA}"
 echo "  persona_assignment_policy=${PERSONA_ASSIGNMENT_POLICY}"
 echo "  persona_assignment_alpha=${PERSONA_ASSIGNMENT_ALPHA:-<cli-default>}"
+echo "  instance_test_size=${INSTANCE_TEST_SIZE:-0.2}"
+echo "  instance_validation_size=${INSTANCE_VALIDATION_SIZE:-0.1}"
 echo "  mode=${MODE_VALUE}"
 echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
 echo "  clustered=${CLUSTERED_VALUE}"
@@ -217,6 +219,8 @@ TARGET_CMD=(
   FIXED_PERSONA=${FIXED_PERSONA}
   PERSONA_ASSIGNMENT_POLICY=${PERSONA_ASSIGNMENT_POLICY}
   PERSONA_ASSIGNMENT_ALPHA=${PERSONA_ASSIGNMENT_ALPHA}
+  INSTANCE_TEST_SIZE=${INSTANCE_TEST_SIZE:-0.2}
+  INSTANCE_VALIDATION_SIZE=${INSTANCE_VALIDATION_SIZE:-0.1}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=${CLUSTERED_VALUE}
   CLUSTERING_K=${CLUSTERING_K}

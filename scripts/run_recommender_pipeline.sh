@@ -16,6 +16,8 @@ Environment variables:
   SIMULATOR=dirichlet_persona           Labeling simulator name.
   LABEL_SEED=1729                       RNG seed for simulated pairwise labels.
   PERSONA_SEED=42                       RNG seed for persona assignment / metric sampling.
+  INSTANCE_TEST_SIZE=0.2               Held-out recommender test split size over selected instances.
+  INSTANCE_VALIDATION_SIZE=0.1         Validation split size over the remaining post-test instances.
   PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
                                         Labeling persona assignment policy.
   PERSONA_ASSIGNMENT_ALPHA=             Optional Dirichlet concentration for client-level persona assignment.
@@ -102,6 +104,8 @@ LABEL_FILENAME="${LABEL_FILENAME:-pairwise_labels.parquet}"
 SIMULATOR="${SIMULATOR:-dirichlet_persona}"
 LABEL_SEED="${LABEL_SEED:-1729}"
 PERSONA_SEED="${PERSONA_SEED:-42}"
+INSTANCE_TEST_SIZE="${INSTANCE_TEST_SIZE:-0.2}"
+INSTANCE_VALIDATION_SIZE="${INSTANCE_VALIDATION_SIZE:-0.1}"
 PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-}"
 TRAIN_ROUNDS="${TRAIN_ROUNDS:-10}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
@@ -244,6 +248,8 @@ else
     --label-filename "$LABEL_FILENAME" \
     --seed "$PERSONA_SEED" \
     --label-seed "$LABEL_SEED" \
+    --instance-test-size "$INSTANCE_TEST_SIZE" \
+    --instance-validation-size "$INSTANCE_VALIDATION_SIZE" \
     "${LABEL_EXTRA[@]}"
 fi
 
