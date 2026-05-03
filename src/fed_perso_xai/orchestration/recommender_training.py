@@ -629,6 +629,7 @@ def _persist_clustered_training_artifacts(
         "recommender_type": config.recommender_type,
         "enabled": True,
         "method": config.clustering.method,
+        "representation": config.clustering.representation,
         "k": int(config.clustering.k),
         "enable_pca": bool(config.clustering.enable_pca),
         "pca_components": int(config.clustering.pca_components),

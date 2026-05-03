@@ -372,6 +372,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="secure_kmeans",
         choices=["secure_kmeans"],
     )
+    recommender_train_parser.add_argument(
+        "--clustering-representation",
+        default="model",
+        choices=["model", "delta"],
+        help="Cluster either the full local model parameters or the per-round local update relative to the client's starting model.",
+    )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
     recommender_train_parser.add_argument(
         "--clustering-enable-pca",
@@ -449,7 +455,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         default=None,
-        help="Overwrite existing completed federated training runs for launcher experiments.",
+        help=(
+            "Retrain and overwrite existing completed federated runs for launcher experiments. "
+            "When omitted, completed runs are reused and the launcher proceeds directly to "
+            "explain/evaluate planning."
+        ),
     )
     return parser
 
@@ -794,6 +804,7 @@ def main() -> None:
                 clustering=RecommenderClusteringConfig(
                     enabled=bool(args.clustered),
                     method=args.clustering_method,
+                    representation=args.clustering_representation,
                     k=args.clustering_k,
                     enable_pca=bool(args.clustering_enable_pca),
                     pca_components=args.clustering_pca_components,

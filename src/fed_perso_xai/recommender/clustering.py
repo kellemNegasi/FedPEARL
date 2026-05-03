@@ -310,9 +310,25 @@ class ClientSideRandomProjector:
         projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
         round_id: int,
     ) -> SecretSharedReducedVector:
+        flat_vector = self.extractor.flatten(parameters)
+        return self.build_private_reduced_vector_from_flat_vector(
+            client_id=client_id,
+            flat_vector=flat_vector,
+            projection_spec=projection_spec,
+            round_id=round_id,
+        )
+
+    def build_private_reduced_vector_from_flat_vector(
+        self,
+        *,
+        client_id: str,
+        flat_vector: np.ndarray,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
+        round_id: int,
+    ) -> SecretSharedReducedVector:
         protocol = _build_private_clustering_protocol(self.training_config)
         share_encoder = _build_share_encoder(protocol, client_id=client_id, round_id=round_id)
-        flat_vector = self.extractor.flatten(parameters)
+        flat_vector = np.asarray(flat_vector, dtype=np.float64).reshape(-1)
         reduced_vector = projection_spec.transform(flat_vector)
         squared_norm = np.asarray([float(np.dot(reduced_vector, reduced_vector))], dtype=np.float64)
         vector_shares = tuple(

@@ -15,7 +15,7 @@ from fed_perso_xai.fl.client import ClientData
 from fed_perso_xai.fl.simulation import run_federated_training
 from fed_perso_xai.models import create_model
 from fed_perso_xai.models.persistence import save_global_model_parameters
-from fed_perso_xai.utils.config import FederatedTrainingConfig
+from fed_perso_xai.utils.config import ArtifactPaths, FederatedTrainingConfig
 from fed_perso_xai.utils.paths import (
     federated_run_dir,
     partition_root,
@@ -50,6 +50,24 @@ class FederatedTrainingArtifacts:
     runtime_report_path: Path
     completion_marker_path: Path
     config_snapshot_path: Path
+
+
+def load_completed_federated_training_run(
+    *,
+    paths: ArtifactPaths,
+    dataset_name: str,
+    num_clients: int,
+    alpha: float,
+    seed: int,
+) -> tuple[FederatedTrainingArtifacts, dict[str, Any]] | None:
+    """Return completed training artifacts for a deterministic run location, if present."""
+
+    result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
+    artifacts = _build_federated_training_artifacts(result_dir)
+    metadata = _load_completed_federated_training_metadata(artifacts)
+    if metadata is None:
+        return None
+    return artifacts, metadata
 
 
 def train_federated_from_partitions(

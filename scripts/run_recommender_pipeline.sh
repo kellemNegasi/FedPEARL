@@ -49,6 +49,7 @@ Environment variables:
   SECURE_SEED=0                         Secure aggregation RNG seed.
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
+  CLUSTERING_REPRESENTATION=model       Cluster either full local models or per-round deltas: model or delta.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
   CLUSTERING_ENABLE_PCA=1              Pass --no-clustering-enable-pca when set to 0.
   CLUSTERING_PCA_COMPONENTS=8           PCA components for clustered training.
@@ -128,6 +129,7 @@ SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-65536}"
 SECURE_SEED="${SECURE_SEED:-0}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
+CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
 CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA:-1}"
 CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
@@ -152,6 +154,10 @@ fi
 
 if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
   echo "ERROR: PERSONA_ASSIGNMENT_POLICY must be fixed or dirichlet_sampled." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_REPRESENTATION" =~ ^(model|delta)$ ]]; then
+  echo "ERROR: CLUSTERING_REPRESENTATION must be model or delta." >&2
   exit 2
 fi
 
@@ -187,6 +193,7 @@ TRAIN_EXTRA+=(--secure-field-modulus "$SECURE_FIELD_MODULUS")
 TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
+TRAIN_EXTRA+=(--clustering-representation "$CLUSTERING_REPRESENTATION")
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
 if [[ "$CLUSTERING_ENABLE_PCA" == "0" ]]; then
   TRAIN_EXTRA+=(--no-clustering-enable-pca)

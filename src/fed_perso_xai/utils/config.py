@@ -10,6 +10,7 @@ from typing import Any
 DEFAULT_RECOMMENDER_TYPE = "svm_rank"
 _SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
 _SUPPORTED_RECOMMENDER_CLUSTERING_METHODS = ("secure_kmeans",)
+_SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS = ("model", "delta")
 
 
 def _normalize_recommender_type(recommender_type: str) -> str:
@@ -28,6 +29,16 @@ def _normalize_recommender_clustering_method(method: str) -> str:
         supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_METHODS)
         raise ValueError(
             f"Unsupported clustering.method {method!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
+def _normalize_recommender_clustering_representation(representation: str) -> str:
+    normalized = str(representation).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS)
+        raise ValueError(
+            f"Unsupported clustering.representation {representation!r}. Supported values: {supported}."
         )
     return normalized
 
@@ -398,6 +409,7 @@ class RecommenderClusteringConfig:
 
     enabled: bool = False
     method: str = "secure_kmeans"
+    representation: str = "model"
     k: int = 3
     enable_pca: bool = True
     pca_components: int = 8
@@ -410,6 +422,7 @@ class RecommenderClusteringConfig:
         if not isinstance(self.enabled, bool):
             raise TypeError("enabled must be a boolean.")
         _normalize_recommender_clustering_method(self.method)
+        _normalize_recommender_clustering_representation(self.representation)
         _require_integer_at_least("k", self.k, minimum=1)
         if not isinstance(self.enable_pca, bool):
             raise TypeError("enable_pca must be a boolean.")

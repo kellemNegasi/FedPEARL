@@ -435,10 +435,11 @@ def _run_clustered_recommender_training(
         )
 
     LOGGER.info(
-        "Starting clustered recommender training clients=%s rounds=%s clusters=%s warmup_rounds=%s freeze_pca_after_warmup=%s recommender_type=%s",
+        "Starting clustered recommender training clients=%s rounds=%s clusters=%s representation=%s warmup_rounds=%s freeze_pca_after_warmup=%s recommender_type=%s",
         len(client_datasets),
         config.rounds,
         clustering_config.k,
+        clustering_config.representation,
         warmup_rounds,
         freeze_pca_after_warmup,
         config.recommender_type,
@@ -446,6 +447,7 @@ def _run_clustered_recommender_training(
 
     for server_round in range(1, config.rounds + 1):
         local_parameters: dict[str, list[np.ndarray]] = {}
+        local_clustering_vectors: dict[str, np.ndarray] = {}
         local_weights: dict[str, int] = {}
         train_losses: dict[str, float] = {}
         is_warmup_round = server_round <= warmup_rounds
@@ -467,6 +469,12 @@ def _run_clustered_recommender_training(
                 base_parameters=starting_parameters,
             )
             local_parameters[client_name] = fitted_parameters
+            local_clustering_vectors[client_name] = _clustering_representation_vector(
+                fitted_parameters=fitted_parameters,
+                base_parameters=starting_parameters,
+                representation=clustering_config.representation,
+                extractor=extractor,
+            )
             local_weights[client_name] = int(dataset.y_train.shape[0])
             train_losses[client_name] = float(train_loss)
 
@@ -503,13 +511,18 @@ def _run_clustered_recommender_training(
             )
             continue
 
+        ordered_client_names = sorted(local_parameters)
         ordered_local_parameters = {
             client_name: local_parameters[client_name]
-            for client_name in sorted(local_parameters)
+            for client_name in ordered_client_names
+        }
+        ordered_clustering_vectors = {
+            client_name: local_clustering_vectors[client_name]
+            for client_name in ordered_client_names
         }
         projection_fitted_this_round = False
         if not use_pca:
-            projection_dimension = int(extractor.flatten(next(iter(ordered_local_parameters.values()))).shape[0])
+            projection_dimension = int(next(iter(ordered_clustering_vectors.values())).shape[0])
             projection_spec = build_identity_projection_spec(input_dimension=projection_dimension)
             projection_generation_mode = "identity_no_projection"
             projection_server_observes_raw_weights = False
@@ -518,7 +531,10 @@ def _run_clustered_recommender_training(
             projection_generation_mode = "frozen_after_warmup_reuse"
             projection_server_observes_raw_weights = False
         else:
-            _, flattened_vectors = extractor.flatten_many(ordered_local_parameters)
+            flattened_vectors = np.stack(
+                [ordered_clustering_vectors[client_name] for client_name in ordered_client_names],
+                axis=0,
+            )
             projection_spec = build_centered_pca_projection_spec(
                 flattened_vectors=flattened_vectors,
                 requested_components=clustering_config.pca_components,
@@ -533,19 +549,19 @@ def _run_clustered_recommender_training(
             projection_server_observes_raw_weights = True
         initial_reduced_vectors = np.stack(
             [
-                projection_spec.transform(extractor.flatten(ordered_local_parameters[client_name]))
-                for client_name in ordered_local_parameters
+                projection_spec.transform(ordered_clustering_vectors[client_name])
+                for client_name in ordered_client_names
             ],
             axis=0,
         )
         shared_reduced_vectors = [
-            projector.build_private_reduced_vector(
+            projector.build_private_reduced_vector_from_flat_vector(
                 client_id=client_name,
-                parameters=ordered_local_parameters[client_name],
+                flat_vector=ordered_clustering_vectors[client_name],
                 projection_spec=projection_spec,
                 round_id=server_round,
             )
-            for client_name in ordered_local_parameters
+            for client_name in ordered_client_names
         ]
         clustering_seed = int(config.seed + server_round - 1)
         assignments_result = clusterer.cluster(
@@ -624,6 +640,7 @@ def _run_clustered_recommender_training(
                 cluster_sizes=dict(cluster_sizes),
                 projection_metadata={
                     **projection_spec.to_metadata(),
+                    "clustering_representation": str(clustering_config.representation),
                     "projection_generation_mode": projection_generation_mode,
                     "server_observes_raw_weights_during_projection_fit": projection_server_observes_raw_weights,
                     "projection_fit_round_id": int(server_round) if projection_fitted_this_round else None,
@@ -690,6 +707,7 @@ def _run_clustered_recommender_training(
         "rounds_completed": len(round_history),
         "clustered": True,
         "cluster_count": int(clustering_config.k),
+        "clustering_representation": str(clustering_config.representation),
         "warmup_rounds": warmup_rounds,
         "freeze_pca_after_warmup": freeze_pca_after_warmup,
         "server_observes_raw_weights_during_clustering": server_observes_raw_weights_during_clustering,
@@ -731,6 +749,23 @@ def _fit_local_recommender(
         seed=int(seed + dataset.client_id),
     )
     return model.get_parameters(), float(train_loss)
+
+
+def _clustering_representation_vector(
+    *,
+    fitted_parameters: Sequence[np.ndarray],
+    base_parameters: Sequence[np.ndarray],
+    representation: str,
+    extractor: RecommenderWeightVectorExtractor,
+) -> np.ndarray:
+    normalized_representation = str(representation).strip().lower()
+    fitted_vector = extractor.flatten(fitted_parameters)
+    if normalized_representation == "model":
+        return fitted_vector
+    if normalized_representation == "delta":
+        base_vector = extractor.flatten(base_parameters)
+        return fitted_vector - base_vector
+    raise ValueError(f"Unsupported clustering representation {representation!r}.")
 
 
 def _weighted_scalar_average(

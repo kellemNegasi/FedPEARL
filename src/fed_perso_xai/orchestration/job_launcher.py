@@ -12,7 +12,10 @@ import yaml
 
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.explain_eval import plan_explain_eval_jobs
-from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
+from fed_perso_xai.orchestration.federated_training import (
+    load_completed_federated_training_run,
+    train_federated_from_partitions,
+)
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     DataPreparationConfig,
@@ -110,18 +113,34 @@ def run_job_launcher(
             paths=paths,
             experiment=experiment,
         )
-        training_artifacts, training_summary = train_federated_from_partitions(
-            training_config,
-            run_id=_render_run_id(raw_config.get("run_id_template"), experiment),
-            partition_data_root=partition_root(
-                paths.partition_root,
-                experiment.dataset_name,
-                experiment.num_clients,
-                experiment.alpha,
-                experiment.seed,
-            ),
-            force=should_force_training,
-        )
+        existing_training = None
+        if not should_force_training:
+            existing_training = load_completed_federated_training_run(
+                paths=paths,
+                dataset_name=experiment.dataset_name,
+                num_clients=experiment.num_clients,
+                alpha=experiment.alpha,
+                seed=experiment.seed,
+            )
+
+        if existing_training is not None:
+            training_artifacts, existing_summary = existing_training
+            training_summary = dict(existing_summary)
+            training_summary["status"] = "reused_existing"
+            training_summary["skipped"] = True
+        else:
+            training_artifacts, training_summary = train_federated_from_partitions(
+                training_config,
+                run_id=_render_run_id(raw_config.get("run_id_template"), experiment),
+                partition_data_root=partition_root(
+                    paths.partition_root,
+                    experiment.dataset_name,
+                    experiment.num_clients,
+                    experiment.alpha,
+                    experiment.seed,
+                ),
+                force=should_force_training,
+            )
         run_id = str(training_summary["run_id"])
         run_record.update(
             {

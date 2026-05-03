@@ -47,6 +47,7 @@ usage() {
   echo "  TRAIN_SVM_INTERCEPT_SCALING defaults to 1.0" >&2
   echo "  SKIP_LABELING defaults to 1" >&2
   echo "  CLUSTERING_K defaults to 3" >&2
+  echo "  CLUSTERING_REPRESENTATION defaults to model" >&2
   echo "  CLUSTERING_WARMUP_ROUNDS defaults to 0" >&2
   echo "  CLUSTERING_FREEZE_PCA_AFTER_WARMUP defaults to 0" >&2
   echo "  CLUSTERING_ENABLE_PCA defaults to 1" >&2
@@ -88,6 +89,7 @@ TRAIN_SVM_C="${9:-${TRAIN_SVM_C:-0.5}}"
 TRAIN_SVM_INTERCEPT_SCALING="${10:-${TRAIN_SVM_INTERCEPT_SCALING:-1.0}}"
 SKIP_LABELING="${11:-${SKIP_LABELING:-1}}"
 CLUSTERING_K="${12:-${CLUSTERING_K:-3}}"
+CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
 CLUSTERING_WARMUP_ROUNDS="${13:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${14:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
 TOP_K="${15:-${TOP_K:-1,3,5}}"
@@ -98,6 +100,10 @@ CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
 if [[ ! "$CLUSTERING_K" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_K" -lt 1 ]]; then
   echo "ERROR: CLUSTERING_K must be a positive integer." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_REPRESENTATION" =~ ^(model|delta)$ ]]; then
+  echo "ERROR: CLUSTERING_REPRESENTATION must be model or delta." >&2
   exit 2
 fi
 if [[ ! "$CLUSTERING_WARMUP_ROUNDS" =~ ^[0-9]+$ ]]; then
@@ -185,6 +191,7 @@ echo "  train_svm_c=${TRAIN_SVM_C}"
 echo "  train_svm_intercept_scaling=${TRAIN_SVM_INTERCEPT_SCALING}"
 echo "  skip_labeling=${SKIP_LABELING}"
 echo "  clustering_k=${CLUSTERING_K}"
+echo "  clustering_representation=${CLUSTERING_REPRESENTATION}"
 echo "  clustering_warmup_rounds=${CLUSTERING_WARMUP_ROUNDS}"
 echo "  clustering_freeze_pca_after_warmup=${CLUSTERING_FREEZE_PCA_AFTER_WARMUP}"
 echo "  clustering_enable_pca=${CLUSTERING_ENABLE_PCA}"
@@ -213,6 +220,7 @@ TARGET_CMD=(
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=${CLUSTERED_VALUE}
   CLUSTERING_K=${CLUSTERING_K}
+  CLUSTERING_REPRESENTATION=${CLUSTERING_REPRESENTATION}
   CLUSTERING_WARMUP_ROUNDS=${CLUSTERING_WARMUP_ROUNDS}
   CLUSTERING_FREEZE_PCA_AFTER_WARMUP=${CLUSTERING_FREEZE_PCA_AFTER_WARMUP}
   CLUSTERING_ENABLE_PCA=${CLUSTERING_ENABLE_PCA}
