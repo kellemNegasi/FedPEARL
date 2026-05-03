@@ -531,6 +531,13 @@ def _run_clustered_recommender_training(
             else:
                 projection_generation_mode = "server_fit_from_centered_local_models_per_round"
             projection_server_observes_raw_weights = True
+        initial_reduced_vectors = np.stack(
+            [
+                projection_spec.transform(extractor.flatten(ordered_local_parameters[client_name]))
+                for client_name in ordered_local_parameters
+            ],
+            axis=0,
+        )
         shared_reduced_vectors = [
             projector.build_private_reduced_vector(
                 client_id=client_name,
@@ -546,6 +553,7 @@ def _run_clustered_recommender_training(
             projection_spec=projection_spec,
             seed=clustering_seed,
             clustering_config=clustering_config,
+            initial_vectors=initial_reduced_vectors,
         )
         raw_assignments = {
             shared_vector.client_id: int(label)

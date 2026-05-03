@@ -342,6 +342,7 @@ class SecureKMeansClusterer:
         projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
         seed: int,
         clustering_config: RecommenderClusteringConfig,
+        initial_vectors: np.ndarray | None = None,
     ) -> SecureClusterAssignments:
         if not shared_reduced_vectors:
             raise ValueError("shared_reduced_vectors must not be empty.")
@@ -350,11 +351,12 @@ class SecureKMeansClusterer:
 
         protocol = _build_private_clustering_protocol(self.training_config)
         dimension = int(shared_reduced_vectors[0].dimension)
-        current = _initialize_centroids(
+        current, initial_centroid_indices = _initialize_centroids(
             projection_spec=projection_spec,
             dimension=dimension,
             n_clusters=clustering_config.k,
             seed=seed,
+            initial_vectors=initial_vectors,
         )
         labels = np.zeros(len(shared_reduced_vectors), dtype=np.int64)
         last_distance_helper_ids: tuple[int, ...] = ()
@@ -413,7 +415,7 @@ class SecureKMeansClusterer:
             labels=labels,
             centroids=current.astype(np.float64, copy=True),
             iterations=int(iteration),
-            initial_centroid_indices=tuple(),
+            initial_centroid_indices=initial_centroid_indices,
             secure_metadata=secure_metadata,
         )
 
@@ -629,8 +631,43 @@ def _initialize_centroids(
     dimension: int,
     n_clusters: int,
     seed: int,
-) -> np.ndarray:
+    initial_vectors: np.ndarray | None = None,
+) -> tuple[np.ndarray, tuple[int, ...]]:
     rng = np.random.default_rng(seed)
+    if initial_vectors is not None:
+        matrix = np.asarray(initial_vectors, dtype=np.float64)
+        if matrix.ndim != 2:
+            raise ValueError("initial_vectors must be a 2D array.")
+        if matrix.shape[1] != int(dimension):
+            raise ValueError(
+                f"Expected initial_vectors width {dimension}, got {matrix.shape[1]}."
+            )
+        if matrix.shape[0] < int(n_clusters):
+            raise ValueError("initial_vectors must contain at least n_clusters rows.")
+
+        centroid_indices: list[int] = [int(rng.integers(matrix.shape[0]))]
+        centroids = [matrix[centroid_indices[0]].copy()]
+        min_sq_distances = np.sum((matrix - centroids[0]) ** 2, axis=1)
+        while len(centroid_indices) < int(n_clusters):
+            candidate_scores = np.maximum(min_sq_distances, 0.0)
+            candidate_scores[np.asarray(centroid_indices, dtype=np.int64)] = 0.0
+            if float(candidate_scores.sum()) <= 0.0:
+                remaining = [
+                    index for index in range(matrix.shape[0]) if index not in set(centroid_indices)
+                ]
+                if not remaining:
+                    break
+                next_index = int(rng.choice(np.asarray(remaining, dtype=np.int64)))
+            else:
+                probabilities = candidate_scores / float(candidate_scores.sum())
+                next_index = int(rng.choice(matrix.shape[0], p=probabilities))
+            centroid_indices.append(next_index)
+            next_centroid = matrix[next_index].copy()
+            centroids.append(next_centroid)
+            squared_distances = np.sum((matrix - next_centroid) ** 2, axis=1)
+            min_sq_distances = np.minimum(min_sq_distances, squared_distances)
+        return np.stack(centroids, axis=0), tuple(int(index) for index in centroid_indices)
+
     centroids = rng.normal(loc=0.0, scale=1e-3, size=(n_clusters, dimension)).astype(np.float64)
     if dimension == 0:
         raise ValueError("dimension must be positive.")
@@ -639,7 +676,7 @@ def _initialize_centroids(
         axis = cluster_id % dimension
         sign = -1.0 if cluster_id % 2 else 1.0
         centroids[cluster_id, axis] += sign * float(scales[axis])
-    return centroids
+    return centroids, tuple()
 
 
 def _projection_axis_scales(
