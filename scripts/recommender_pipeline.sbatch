@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [LABEL_NAMESPACE] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -34,11 +34,11 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [LABEL_NAMESPACE] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
   echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
-  echo "  PERSONA defaults to dirichlet_sampled and is used as the shared label namespace" >&2
+  echo "  LABEL_NAMESPACE defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise" >&2
   echo "  TRAIN_ROUNDS defaults to 10" >&2
   echo "  TRAIN_EPOCHS defaults to 5" >&2
   echo "  TRAIN_BATCH_SIZE defaults to 2048" >&2
@@ -53,6 +53,7 @@ usage() {
   echo "  TOP_K defaults to 1,3,5" >&2
   echo "  PERSONA_ASSIGNMENT_POLICY defaults to dirichlet_sampled" >&2
   echo "  PERSONA_ASSIGNMENT_ALPHA defaults to CLI default when omitted" >&2
+  echo "  FIXED_PERSONA defaults to lay and is used only when PERSONA_ASSIGNMENT_POLICY=fixed" >&2
 }
 
 if [[ $# -lt 2 || $# -gt 18 ]]; then
@@ -63,7 +64,22 @@ fi
 RUN_ID="$1"
 MODE_RAW="$2"
 SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
-PERSONA="${4:-${PERSONA:-dirichlet_sampled}}"
+PERSONA_ASSIGNMENT_POLICY="${17:-${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}}"
+FIXED_PERSONA="${FIXED_PERSONA:-lay}"
+LABEL_NAMESPACE_ARG="${4:-}"
+LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
+LEGACY_PERSONA_NAMESPACE="${PERSONA:-}"
+if [[ -n "$LABEL_NAMESPACE_ARG" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ARG"
+elif [[ -n "$LABEL_NAMESPACE_ENV" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ENV"
+elif [[ -n "$LEGACY_PERSONA_NAMESPACE" ]]; then
+  LABEL_NAMESPACE="$LEGACY_PERSONA_NAMESPACE"
+elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_NAMESPACE="$FIXED_PERSONA"
+else
+  LABEL_NAMESPACE="dirichlet_sampled"
+fi
 TRAIN_ROUNDS="${5:-${TRAIN_ROUNDS:-10}}"
 TRAIN_EPOCHS="${6:-${TRAIN_EPOCHS:-5}}"
 TRAIN_BATCH_SIZE="${7:-${TRAIN_BATCH_SIZE:-2048}}"
@@ -76,7 +92,6 @@ CLUSTERING_WARMUP_ROUNDS="${13:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${14:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
 TOP_K="${15:-${TOP_K:-1,3,5}}"
 CLUSTERING_ENABLE_PCA="${16:-${CLUSTERING_ENABLE_PCA:-1}}"
-PERSONA_ASSIGNMENT_POLICY="${17:-${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}}"
 PERSONA_ASSIGNMENT_ALPHA="${18:-${PERSONA_ASSIGNMENT_ALPHA:-}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-7}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
@@ -155,7 +170,8 @@ echo "  host=${HOSTNAME}"
 echo "  pwd=$(pwd)"
 echo "  run_id=${RUN_ID}"
 echo "  selection_id=${SELECTION_ID}"
-echo "  label_namespace=${PERSONA}"
+echo "  label_namespace=${LABEL_NAMESPACE}"
+echo "  fixed_persona=${FIXED_PERSONA}"
 echo "  persona_assignment_policy=${PERSONA_ASSIGNMENT_POLICY}"
 echo "  persona_assignment_alpha=${PERSONA_ASSIGNMENT_ALPHA:-<cli-default>}"
 echo "  mode=${MODE_VALUE}"
@@ -191,6 +207,7 @@ TARGET_CMD=(
   SIMULATION_BACKEND=auto
   RAY_NUM_CPUS=${RAY_NUM_CPUS}
   CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
+  FIXED_PERSONA=${FIXED_PERSONA}
   PERSONA_ASSIGNMENT_POLICY=${PERSONA_ASSIGNMENT_POLICY}
   PERSONA_ASSIGNMENT_ALPHA=${PERSONA_ASSIGNMENT_ALPHA}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
@@ -209,7 +226,7 @@ TARGET_CMD=(
   scripts/run_recommender_pipeline.sh
   "${RUN_ID}"
   "${SELECTION_ID}"
-  "${PERSONA}"
+  "${LABEL_NAMESPACE}"
 )
 
 printf '  command='

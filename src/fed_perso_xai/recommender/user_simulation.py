@@ -544,6 +544,8 @@ def label_recommender_context(
             effective_persona_name = fixed_persona.persona
             metadata_seed = int(client_seed)
             metadata_label_seed = int(client_label_seed)
+            metadata_base_seed = int(seed)
+            metadata_base_label_seed = int(label_seed)
         else:
             client_persona = _resolve_client_persona(
                 client_id=client_id,
@@ -581,8 +583,10 @@ def label_recommender_context(
             }
             persona_metadata = persona_assignment_artifact["clients"][client_id] if persona_assignment_artifact else None
             effective_persona_name = output_persona_name
-            metadata_seed = int(seed)
-            metadata_label_seed = int(label_seed)
+            metadata_seed = int(persona_seeds["seed"])
+            metadata_label_seed = int(persona_seeds["label_seed"])
+            metadata_base_seed = int(seed)
+            metadata_base_label_seed = int(label_seed)
         if not train_labels.empty:
             if persona_assignment_policy == DIRICHLET_SAMPLED_PERSONA_ASSIGNMENT_POLICY:
                 train_labels = train_labels.assign(assigned_persona=client_persona)
@@ -609,6 +613,8 @@ def label_recommender_context(
             "pairwise_labels": str(labels_path),
             "seed": metadata_seed,
             "label_seed": metadata_label_seed,
+            "base_seed": metadata_base_seed,
+            "base_label_seed": metadata_base_label_seed,
             "instance_split_seed": client_split_seed,
             "candidate_count": int(len(candidates)),
             "instance_count": int(candidates["dataset_index"].nunique()),

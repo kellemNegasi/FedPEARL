@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_recommender_pipeline.sh RUN_ID SELECTION_ID [PERSONA]
+  scripts/run_recommender_pipeline.sh RUN_ID SELECTION_ID [LABEL_NAMESPACE]
 
 Environment variables:
   PYTHON=python                         Python executable to use.
@@ -19,7 +19,10 @@ Environment variables:
   PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
                                         Labeling persona assignment policy.
   PERSONA_ASSIGNMENT_ALPHA=             Optional Dirichlet concentration for client-level persona assignment.
-  PERSONA=dirichlet_sampled             Shared label namespace used by label/train/eval.
+  FIXED_PERSONA=lay                     Bundled persona config used only when PERSONA_ASSIGNMENT_POLICY=fixed.
+  LABEL_NAMESPACE=                      Shared label namespace used by label/train/eval.
+                                        Defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise.
+  PERSONA=                              Deprecated alias for LABEL_NAMESPACE.
   TRAIN_ROUNDS=10                       Federated recommender rounds.
   TRAIN_EPOCHS=5                        Local recommender epochs.
   TRAIN_BATCH_SIZE=64                   Local recommender batch size.
@@ -74,7 +77,23 @@ fi
 
 RUN_ID="$1"
 SELECTION_ID="$2"
-PERSONA="${3:-${PERSONA:-dirichlet_sampled}}"
+LABEL_NAMESPACE_ARG="${3:-}"
+PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
+FIXED_PERSONA="${FIXED_PERSONA:-lay}"
+LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
+LEGACY_PERSONA_NAMESPACE="${PERSONA:-}"
+
+if [[ -n "$LABEL_NAMESPACE_ARG" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ARG"
+elif [[ -n "$LABEL_NAMESPACE_ENV" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ENV"
+elif [[ -n "$LEGACY_PERSONA_NAMESPACE" ]]; then
+  LABEL_NAMESPACE="$LEGACY_PERSONA_NAMESPACE"
+elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_NAMESPACE="$FIXED_PERSONA"
+else
+  LABEL_NAMESPACE="dirichlet_sampled"
+fi
 
 CLIENTS="${CLIENTS:-all}"
 CONTEXT_FILENAME="${CONTEXT_FILENAME:-candidate_context.parquet}"
@@ -82,7 +101,6 @@ LABEL_FILENAME="${LABEL_FILENAME:-pairwise_labels.parquet}"
 SIMULATOR="${SIMULATOR:-dirichlet_persona}"
 LABEL_SEED="${LABEL_SEED:-1729}"
 PERSONA_SEED="${PERSONA_SEED:-42}"
-PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
 PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-}"
 TRAIN_ROUNDS="${TRAIN_ROUNDS:-10}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
@@ -129,6 +147,21 @@ if [[ -z "${PYTHON:-}" ]]; then
   else
     echo "ERROR: no Python executable found. Set PYTHON=/path/to/python." >&2
     exit 1
+  fi
+fi
+
+if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
+  echo "ERROR: PERSONA_ASSIGNMENT_POLICY must be fixed or dirichlet_sampled." >&2
+  exit 2
+fi
+
+if [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  FIXED_PERSONA_CONFIG_PATH="$PROJECT_ROOT/src/fed_perso_xai/recommender/configs/${FIXED_PERSONA}.yaml"
+  if [[ ! -f "$FIXED_PERSONA_CONFIG_PATH" ]]; then
+    echo "ERROR: FIXED_PERSONA='$FIXED_PERSONA' does not resolve to a bundled persona config at $FIXED_PERSONA_CONFIG_PATH." >&2
+    exit 2
   fi
 fi
 
@@ -180,10 +213,14 @@ fi
 
 LABEL_EXTRA=(
   --persona-assignment-policy "$PERSONA_ASSIGNMENT_POLICY"
-  --output-persona "$PERSONA"
+  --output-persona "$LABEL_NAMESPACE"
 )
 if [[ -n "$PERSONA_ASSIGNMENT_ALPHA" ]]; then
   LABEL_EXTRA+=(--persona-assignment-alpha "$PERSONA_ASSIGNMENT_ALPHA")
+fi
+LABEL_PERSONA_ARGS=()
+if [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_PERSONA_ARGS+=(--persona "$FIXED_PERSONA")
 fi
 
 if [[ "$SKIP_LABELING" == "1" ]]; then
@@ -193,7 +230,7 @@ else
   "$PYTHON" -m fed_perso_xai label-recommender-context \
     --run-id "$RUN_ID" \
     --selection "$SELECTION_ID" \
-    --persona "$PERSONA" \
+    "${LABEL_PERSONA_ARGS[@]}" \
     --simulator "$SIMULATOR" \
     --clients "$CLIENTS" \
     --context-filename "$CONTEXT_FILENAME" \
@@ -207,7 +244,7 @@ echo "==> Training federated recommender"
 "$PYTHON" -m fed_perso_xai train-recommender-federated \
   --run-id "$RUN_ID" \
   --selection "$SELECTION_ID" \
-  --persona "$PERSONA" \
+  --persona "$LABEL_NAMESPACE" \
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
   --label-filename "$LABEL_FILENAME" \
@@ -233,7 +270,7 @@ echo "==> Evaluating federated recommender"
 "$PYTHON" -m fed_perso_xai evaluate-recommender \
   --run-id "$RUN_ID" \
   --selection "$SELECTION_ID" \
-  --persona "$PERSONA" \
+  --persona "$LABEL_NAMESPACE" \
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
   --label-filename "$LABEL_FILENAME" \
@@ -244,4 +281,4 @@ echo "==> Evaluating federated recommender"
 echo "==> Recommender pipeline complete"
 echo "Run ID: $RUN_ID"
 echo "Selection: $SELECTION_ID"
-echo "Label Namespace: $PERSONA"
+echo "Label Namespace: $LABEL_NAMESPACE"

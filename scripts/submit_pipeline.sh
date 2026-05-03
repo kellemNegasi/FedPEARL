@@ -11,8 +11,13 @@ Behavior:
   clustered: submit one clustered run for every RUN_ID.
 
 Environment variables:
-  PERSONA=dirichlet_sampled
+  LABEL_NAMESPACE=
                                     Shared label namespace used by label/train/eval.
+                                    Defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise.
+  PERSONA=
+                                    Deprecated alias for LABEL_NAMESPACE.
+  FIXED_PERSONA=lay
+                                    Bundled persona config used only when PERSONA_ASSIGNMENT_POLICY=fixed.
   PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
   PERSONA_ASSIGNMENT_ALPHA=
   TRAIN_ROUNDS=10
@@ -82,8 +87,19 @@ if [[ -n "$CLUSTERING_ENABLE_PCA_ARG" && ! "$CLUSTERING_ENABLE_PCA_ARG" =~ ^(0|1
 fi
 
 SELECTION_ID="${SELECTION_ID:-test__max-20__seed-42}"
-PERSONA="${PERSONA:-dirichlet_sampled}"
 PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
+FIXED_PERSONA="${FIXED_PERSONA:-lay}"
+LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
+LEGACY_PERSONA_NAMESPACE="${PERSONA:-}"
+if [[ -n "$LABEL_NAMESPACE_ENV" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ENV"
+elif [[ -n "$LEGACY_PERSONA_NAMESPACE" ]]; then
+  LABEL_NAMESPACE="$LEGACY_PERSONA_NAMESPACE"
+elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_NAMESPACE="$FIXED_PERSONA"
+else
+  LABEL_NAMESPACE="dirichlet_sampled"
+fi
 PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-10.0}"
 TRAIN_ROUNDS="${TRAIN_ROUNDS:-200}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-10}"
@@ -145,12 +161,12 @@ SBATCH_SCRIPT="scripts/recommender_pipeline.sbatch"
 
 for run_id in "${RUN_IDS[@]}"; do
   for submission_mode in "${SUBMISSION_MODES[@]}"; do
-    sbatch \
+    FIXED_PERSONA="$FIXED_PERSONA" sbatch \
       "$SBATCH_SCRIPT" \
       "$run_id" \
       "$submission_mode" \
       "$SELECTION_ID" \
-      "$PERSONA" \
+      "$LABEL_NAMESPACE" \
       "$TRAIN_ROUNDS" \
       "$TRAIN_EPOCHS" \
       "$TRAIN_BATCH_SIZE" \
