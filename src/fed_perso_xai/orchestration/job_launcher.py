@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -519,7 +520,20 @@ def _write_slurm_array_script(
             'cd "$PROJECT_ROOT"',
         ]
     )
-    if module_load:
+    python_module_pattern = _python_module_family_pattern(module_load)
+    if python_module_pattern is not None:
+        sbatch_lines.extend(
+            [
+                "# Load the latest available Python module matching the configured major.minor family.",
+                f'PYTHON_MODULE="$(module -t avail python 2>&1 | grep \'{python_module_pattern}\' | head -n 1)"',
+                'if [[ -z "$PYTHON_MODULE" ]]; then',
+                f'  echo "ERROR: no Python module found matching pattern {python_module_pattern}." >&2',
+                "  exit 1",
+                "fi",
+                'module load "$PYTHON_MODULE"',
+            ]
+        )
+    elif module_load:
         sbatch_lines.append(f"module load {module_load}")
     if venv_path:
         sbatch_lines.extend(
@@ -590,6 +604,15 @@ def _merged_sbatch_args(slurm_cfg: dict[str, Any]) -> list[str]:
             merged.append(f"--{key}={value}")
     merged.extend(explicit_args)
     return merged
+
+
+def _python_module_family_pattern(module_load: str) -> str | None:
+    text = str(module_load or "").strip()
+    match = re.fullmatch(r"python/(\d+)\.(\d+)(?:\.\d+)?", text)
+    if match is None:
+        return None
+    major, minor = match.groups()
+    return f"^python/{major}\\.{minor}"
 
 
 def _sbatch_option_name(arg: str) -> str:
