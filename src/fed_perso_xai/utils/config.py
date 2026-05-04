@@ -11,6 +11,7 @@ DEFAULT_RECOMMENDER_TYPE = "svm_rank"
 _SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
 _SUPPORTED_RECOMMENDER_CLUSTERING_METHODS = ("secure_kmeans",)
 _SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS = ("model", "delta")
+_SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES = ("l2",)
 
 
 def _normalize_recommender_type(recommender_type: str) -> str:
@@ -39,6 +40,16 @@ def _normalize_recommender_clustering_representation(representation: str) -> str
         supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS)
         raise ValueError(
             f"Unsupported clustering.representation {representation!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
+def _normalize_recommender_clustering_normalization_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES)
+        raise ValueError(
+            f"Unsupported clustering.normalization_mode {mode!r}. Supported values: {supported}."
         )
     return normalized
 
@@ -410,6 +421,9 @@ class RecommenderClusteringConfig:
     enabled: bool = False
     method: str = "secure_kmeans"
     representation: str = "model"
+    normalize_clustering_vector: bool = True
+    clustering_normalization_mode: str = "l2"
+    delta_over_base_norm: bool = True
     k: int = 3
     enable_pca: bool = True
     pca_components: int = 8
@@ -423,6 +437,11 @@ class RecommenderClusteringConfig:
             raise TypeError("enabled must be a boolean.")
         _normalize_recommender_clustering_method(self.method)
         _normalize_recommender_clustering_representation(self.representation)
+        if not isinstance(self.normalize_clustering_vector, bool):
+            raise TypeError("normalize_clustering_vector must be a boolean.")
+        _normalize_recommender_clustering_normalization_mode(self.clustering_normalization_mode)
+        if not isinstance(self.delta_over_base_norm, bool):
+            raise TypeError("delta_over_base_norm must be a boolean.")
         _require_integer_at_least("k", self.k, minimum=1)
         if not isinstance(self.enable_pca, bool):
             raise TypeError("enable_pca must be a boolean.")

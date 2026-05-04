@@ -52,6 +52,9 @@ Environment variables:
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
   CLUSTERING_REPRESENTATION=model       Cluster either full local models or per-round deltas: model or delta.
+  CLUSTERING_NORMALIZE_VECTOR=1         Pass --no-clustering-normalize-vector when set to 0.
+  CLUSTERING_NORMALIZATION_MODE=l2      Client-side clustering vector normalization mode.
+  CLUSTERING_DELTA_OVER_BASE_NORM=1     When clustering deltas, normalize by the starting model norm.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
   CLUSTERING_ENABLE_PCA=1              Pass --no-clustering-enable-pca when set to 0.
   CLUSTERING_PCA_COMPONENTS=8           PCA components for clustered training.
@@ -134,6 +137,9 @@ SECURE_SEED="${SECURE_SEED:-0}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
 CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
+CLUSTERING_NORMALIZE_VECTOR="${CLUSTERING_NORMALIZE_VECTOR:-1}"
+CLUSTERING_NORMALIZATION_MODE="${CLUSTERING_NORMALIZATION_MODE:-l2}"
+CLUSTERING_DELTA_OVER_BASE_NORM="${CLUSTERING_DELTA_OVER_BASE_NORM:-1}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
 CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA:-1}"
 CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
@@ -162,6 +168,18 @@ if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
 fi
 if [[ ! "$CLUSTERING_REPRESENTATION" =~ ^(model|delta)$ ]]; then
   echo "ERROR: CLUSTERING_REPRESENTATION must be model or delta." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NORMALIZE_VECTOR" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_NORMALIZE_VECTOR must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NORMALIZATION_MODE" =~ ^(l2)$ ]]; then
+  echo "ERROR: CLUSTERING_NORMALIZATION_MODE must be l2." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_DELTA_OVER_BASE_NORM" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_DELTA_OVER_BASE_NORM must be 0 or 1." >&2
   exit 2
 fi
 
@@ -198,6 +216,17 @@ TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
 TRAIN_EXTRA+=(--clustering-representation "$CLUSTERING_REPRESENTATION")
+if [[ "$CLUSTERING_NORMALIZE_VECTOR" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-clustering-normalize-vector)
+else
+  TRAIN_EXTRA+=(--clustering-normalize-vector)
+fi
+TRAIN_EXTRA+=(--clustering-normalization-mode "$CLUSTERING_NORMALIZATION_MODE")
+if [[ "$CLUSTERING_DELTA_OVER_BASE_NORM" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-clustering-delta-over-base-norm)
+else
+  TRAIN_EXTRA+=(--clustering-delta-over-base-norm)
+fi
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
 if [[ "$CLUSTERING_ENABLE_PCA" == "0" ]]; then
   TRAIN_EXTRA+=(--no-clustering-enable-pca)

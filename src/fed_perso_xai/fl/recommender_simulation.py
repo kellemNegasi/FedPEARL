@@ -505,6 +505,9 @@ def _run_clustered_recommender_training(
                 starting_parameters,
                 {"server_round": int(server_round)},
                 representation=clustering_config.representation,
+                normalize_vector=bool(clustering_config.normalize_clustering_vector),
+                normalization_mode=str(clustering_config.clustering_normalization_mode),
+                delta_over_base_norm=bool(clustering_config.delta_over_base_norm),
                 include_raw_clustering_vector=(not is_warmup_round and projection_spec is None),
             )
             encoded_updates[client_name] = client_update.encoded_model_update
@@ -674,6 +677,9 @@ def _run_clustered_recommender_training(
                 projection_metadata={
                     **projection_spec.to_metadata(),
                     "clustering_representation": str(clustering_config.representation),
+                    "normalize_clustering_vector": bool(clustering_config.normalize_clustering_vector),
+                    "clustering_normalization_mode": str(clustering_config.clustering_normalization_mode),
+                    "delta_over_base_norm": bool(clustering_config.delta_over_base_norm),
                     "projection_generation_mode": projection_generation_mode,
                     "server_observes_raw_weights_during_projection_fit": projection_server_observes_raw_weights,
                     "projection_fit_round_id": int(server_round) if projection_fitted_this_round else None,
@@ -741,6 +747,9 @@ def _run_clustered_recommender_training(
         "clustered": True,
         "cluster_count": int(clustering_config.k),
         "clustering_representation": str(clustering_config.representation),
+        "normalize_clustering_vector": bool(clustering_config.normalize_clustering_vector),
+        "clustering_normalization_mode": str(clustering_config.clustering_normalization_mode),
+        "delta_over_base_norm": bool(clustering_config.delta_over_base_norm),
         "warmup_rounds": warmup_rounds,
         "freeze_pca_after_warmup": freeze_pca_after_warmup,
         "server_observes_raw_weights_during_clustering": server_observes_raw_weights_during_clustering,

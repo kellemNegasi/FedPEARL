@@ -387,6 +387,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["model", "delta"],
         help="Cluster either the full local model parameters or the per-round local update relative to the client's starting model.",
     )
+    recommender_train_parser.add_argument(
+        "--clustering-normalize-vector",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize each client clustering vector before projection and secret sharing.",
+    )
+    recommender_train_parser.add_argument(
+        "--clustering-normalization-mode",
+        default="l2",
+        choices=["l2"],
+        help="Normalization mode applied to client clustering vectors before projection/sharing.",
+    )
+    recommender_train_parser.add_argument(
+        "--clustering-delta-over-base-norm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When clustering on deltas, normalize by the starting model norm instead of the delta norm.",
+    )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
     recommender_train_parser.add_argument(
         "--clustering-enable-pca",
@@ -815,6 +833,9 @@ def main() -> None:
                     enabled=bool(args.clustered),
                     method=args.clustering_method,
                     representation=args.clustering_representation,
+                    normalize_clustering_vector=bool(args.clustering_normalize_vector),
+                    clustering_normalization_mode=args.clustering_normalization_mode,
+                    delta_over_base_norm=bool(args.clustering_delta_over_base_norm),
                     k=args.clustering_k,
                     enable_pca=bool(args.clustering_enable_pca),
                     pca_components=args.clustering_pca_components,

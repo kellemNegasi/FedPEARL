@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fed_perso_xai.fl.client import normalize_clustering_vector
 from fed_perso_xai.fl.recommender_simulation import _align_cluster_labels_to_previous_round
 from fed_perso_xai.orchestration.recommender_training import train_federated_recommender
 from fed_perso_xai.recommender.clustering import (
@@ -256,6 +257,34 @@ def test_client_side_projector_secret_shares_reduced_representation_only() -> No
     assert all(np.asarray(share.payload).shape == (1,) for share in private_vector.helper_squared_norm_shares)
 
 
+def test_normalize_clustering_vector_l2_returns_unit_vector() -> None:
+    vector = np.asarray([3.0, 4.0], dtype=np.float64)
+    normalized = normalize_clustering_vector(vector, enabled=True, mode="l2")
+
+    assert np.allclose(normalized, np.asarray([0.6, 0.8], dtype=np.float64))
+    assert np.isclose(np.linalg.norm(normalized), 1.0)
+
+
+def test_normalize_clustering_vector_keeps_zero_vector_stable() -> None:
+    vector = np.zeros(3, dtype=np.float64)
+    normalized = normalize_clustering_vector(vector, enabled=True, mode="l2")
+
+    assert np.allclose(normalized, vector)
+
+
+def test_normalize_clustering_vector_can_use_base_vector_norm() -> None:
+    vector = np.asarray([3.0, 4.0], dtype=np.float64)
+    base_vector = np.asarray([6.0, 8.0], dtype=np.float64)
+    normalized = normalize_clustering_vector(
+        vector,
+        enabled=True,
+        mode="l2",
+        reference_vector=base_vector,
+    )
+
+    assert np.allclose(normalized, np.asarray([0.3, 0.4], dtype=np.float64))
+
+
 def test_random_projection_spec_is_seeded_and_deterministic() -> None:
     spec_a = build_random_projection_spec(input_dimension=3, requested_components=8, seed=13)
     spec_b = build_random_projection_spec(input_dimension=3, requested_components=8, seed=13)
@@ -432,6 +461,9 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     manifest = json.loads(artifacts.cluster_manifest_path.read_text(encoding="utf-8"))
     assert manifest["k"] == 3
     assert manifest["pca_components"] == 8
+    assert manifest["normalize_clustering_vector"] is True
+    assert manifest["clustering_normalization_mode"] == "l2"
+    assert manifest["delta_over_base_norm"] is True
     assert set(manifest["final_cluster_model_checkpoint_paths"]) == {"0", "1", "2"}
 
     round_one = json.loads((artifacts.cluster_rounds_dir / "round_0001.json").read_text(encoding="utf-8"))
@@ -449,6 +481,9 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert round_one["projection"]["centering_applied"] is True
     assert round_one["projection"]["fit_client_count"] == 4
     assert round_one["projection"]["actual_components"] == 3
+    assert round_one["projection"]["normalize_clustering_vector"] is True
+    assert round_one["projection"]["clustering_normalization_mode"] == "l2"
+    assert round_one["projection"]["delta_over_base_norm"] is True
     assert round_one["secure_clustering"]["server_observes_raw_weights"] is False
     assert round_one["secure_clustering"]["server_observes_reduced_vectors"] is False
     assert round_one["secure_aggregation_per_cluster"]["0"]["mode"] == "secure"
@@ -664,8 +699,13 @@ def test_recommender_clustering_config_defaults_and_validation() -> None:
     config = RecommenderClusteringConfig(enabled=True)
     assert config.method == "secure_kmeans"
     assert config.k == 3
+    assert config.normalize_clustering_vector is True
+    assert config.clustering_normalization_mode == "l2"
+    assert config.delta_over_base_norm is True
     assert config.enable_pca is True
     assert config.pca_components == 8
 
     with pytest.raises(ValueError, match="Unsupported clustering.method"):
         RecommenderClusteringConfig(enabled=True, method="missing")
+    with pytest.raises(ValueError, match="Unsupported clustering.normalization_mode"):
+        RecommenderClusteringConfig(enabled=True, clustering_normalization_mode="invalid")

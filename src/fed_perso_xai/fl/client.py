@@ -109,6 +109,7 @@ SECURE_PAYLOAD_ENCODING_KEY = "secure_payload_encoding"
 SECURE_PAYLOAD_ENCODING_VALUE = "lcc_helper_shares_v1"
 SECURE_PAYLOAD_LAYOUT_KEY = "secure_payload_layout"
 SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY = "secure_weighted_payload_max_abs"
+CLUSTERING_VECTOR_NORMALIZATION_EPS = 1e-12
 
 
 def extract_shared_parameter_payload(parameters: list[np.ndarray]) -> SharedParameterPayload:
@@ -219,6 +220,34 @@ def compute_weighted_payload_max_abs(
     if not np.isfinite(max_abs):
         raise ValueError("weighted secure payload must be finite.")
     return max_abs
+
+
+def normalize_clustering_vector(
+    vector: np.ndarray,
+    *,
+    enabled: bool,
+    mode: str,
+    reference_vector: np.ndarray | None = None,
+    eps: float = CLUSTERING_VECTOR_NORMALIZATION_EPS,
+) -> np.ndarray:
+    """Normalize a client clustering vector before projection/share encoding."""
+
+    normalized_vector = np.asarray(vector, dtype=np.float64).reshape(-1).copy()
+    if not enabled:
+        return normalized_vector
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode != "l2":
+        raise ValueError(
+            f"Unsupported clustering normalization mode {mode!r}. Supported values: l2."
+        )
+    denominator_vector = (
+        np.asarray(reference_vector, dtype=np.float64).reshape(-1)
+        if reference_vector is not None
+        else normalized_vector
+    )
+    norm = max(float(np.linalg.norm(denominator_vector)), float(eps))
+    normalized_vector /= norm
+    return normalized_vector
 
 
 if fl is not None:
@@ -405,17 +434,31 @@ if fl is not None:
             shared_parameters: list[np.ndarray],
             base_parameters: list[np.ndarray],
             representation: str,
+            normalize_vector: bool,
+            normalization_mode: str,
+            delta_over_base_norm: bool,
         ) -> np.ndarray:
             from fed_perso_xai.recommender.clustering import RecommenderWeightVectorExtractor
 
             extractor = RecommenderWeightVectorExtractor()
             fitted_vector = extractor.flatten(shared_parameters)
+            base_vector = extractor.flatten(base_parameters)
             normalized_representation = str(representation).strip().lower()
+            reference_vector: np.ndarray | None = None
             if normalized_representation == "model":
-                return fitted_vector
-            if normalized_representation == "delta":
-                return fitted_vector - extractor.flatten(base_parameters)
-            raise ValueError(f"Unsupported clustering representation {representation!r}.")
+                vector = fitted_vector
+            elif normalized_representation == "delta":
+                vector = fitted_vector - base_vector
+                if delta_over_base_norm:
+                    reference_vector = base_vector
+            else:
+                raise ValueError(f"Unsupported clustering representation {representation!r}.")
+            return normalize_clustering_vector(
+                vector,
+                enabled=normalize_vector,
+                mode=normalization_mode,
+                reference_vector=reference_vector,
+            )
 
         def fit(
             self,
@@ -473,6 +516,9 @@ if fl is not None:
             config: dict[str, Any],
             *,
             representation: str,
+            normalize_vector: bool,
+            normalization_mode: str,
+            delta_over_base_norm: bool,
             include_raw_clustering_vector: bool,
         ) -> ClusteredRecommenderClientUpdate:
             LOGGER.info(
@@ -493,6 +539,9 @@ if fl is not None:
                 shared_parameters=shared_payload.shared_parameters,
                 base_parameters=parameters,
                 representation=representation,
+                normalize_vector=normalize_vector,
+                normalization_mode=normalization_mode,
+                delta_over_base_norm=delta_over_base_norm,
             )
             LOGGER.info(
                 "Clustered recommender fit complete client=%s train_pairs=%s train_loss=%.6f",
