@@ -649,6 +649,7 @@ def _persist_clustered_training_artifacts(
         "clustering_normalization_mode": str(config.clustering.clustering_normalization_mode),
         "delta_over_base_norm": bool(config.clustering.delta_over_base_norm),
         "k": int(config.clustering.k),
+        "num_restarts": int(config.clustering.num_restarts),
         "enable_pca": bool(config.clustering.enable_pca),
         "pca_components": int(config.clustering.pca_components),
         "warmup_rounds": int(config.clustering.warmup_rounds),

@@ -18,6 +18,7 @@ from fed_perso_xai.recommender.clustering import (
     RandomProjectionSpec,
     SecretSharedReducedVector,
     SecureClusterAssignments,
+    SecureKMeansClusterer,
     build_centered_pca_projection_spec,
     build_identity_projection_spec,
     build_random_projection_spec,
@@ -285,6 +286,97 @@ def test_normalize_clustering_vector_can_use_base_vector_norm() -> None:
     assert np.allclose(normalized, np.asarray([0.3, 0.4], dtype=np.float64))
 
 
+def test_secure_kmeans_clusterer_selects_best_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    import fed_perso_xai.recommender.clustering as clustering_module
+
+    config = RecommenderFederatedTrainingConfig(
+        run_id="unit-run",
+        selection_id="selection-0",
+        persona="lay",
+        clustering=RecommenderClusteringConfig(enabled=True, k=2, num_restarts=3, max_iterations=1),
+    )
+    clusterer = SecureKMeansClusterer(config)
+    shared_vectors = [
+        SecretSharedReducedVector(
+            client_id=f"client_{index:03d}",
+            helper_vector_shares=tuple(),
+            helper_squared_norm_shares=tuple(),
+            dimension=2,
+        )
+        for index in range(2)
+    ]
+    projection_spec = IdentityProjectionSpec(input_dimension_value=2)
+    restart_counter = {"value": -1}
+    restart_distance_matrices = (
+        np.asarray([[9.0, 1.0], [8.0, 2.0]], dtype=np.float64),
+        np.asarray([[0.1, 5.0], [0.2, 6.0]], dtype=np.float64),
+        np.asarray([[3.0, 2.0], [4.0, 1.0]], dtype=np.float64),
+    )
+
+    monkeypatch.setattr(
+        clustering_module,
+        "_build_private_clustering_protocol",
+        lambda training_config: type(
+            "DummyProtocol",
+            (),
+            {
+                "helper_ids": (0, 1),
+                "helper_evaluation_points": (11, 12),
+                "encoding_config": type(
+                    "DummyEncoding",
+                    (),
+                    {"privacy_threshold": 2, "resolved_reconstruction_threshold": 3},
+                )(),
+                "field_config": type("DummyField", (), {"modulus": 2_147_483_647})(),
+                "vector_scale": 256,
+                "distance_scale": 65_536,
+            },
+        )(),
+    )
+
+    def fake_initialize_centroids(*, seed, **kwargs):
+        restart_counter["value"] += 1
+        restart_index = restart_counter["value"]
+        return (
+            np.asarray(
+                [
+                    [float(restart_index), 0.0],
+                    [0.0, float(restart_index)],
+                ],
+                dtype=np.float64,
+            ),
+            (restart_index,),
+        )
+
+    monkeypatch.setattr(clustering_module, "_initialize_centroids", fake_initialize_centroids)
+
+    def fake_reconstruct_distances(self, shared_reduced_vectors, centroids, protocol):
+        restart_index = int(round(float(centroids[0, 0])))
+        return restart_distance_matrices[restart_index], protocol.helper_ids, protocol.helper_evaluation_points
+
+    monkeypatch.setattr(SecureKMeansClusterer, "_reconstruct_distances", fake_reconstruct_distances)
+    monkeypatch.setattr(
+        SecureKMeansClusterer,
+        "_recompute_centroids",
+        lambda self, shared_reduced_vectors, labels, previous_centroids, protocol, n_clusters, round_seed: previous_centroids,
+    )
+
+    result = clusterer.cluster(
+        shared_vectors,
+        projection_spec=projection_spec,
+        seed=7,
+        clustering_config=config.clustering,
+        initial_vectors=None,
+    )
+
+    assert result.initial_centroid_indices == (1,)
+    assert result.secure_metadata["num_restarts"] == 3
+    assert result.secure_metadata["best_restart_index"] == 1
+    assert result.secure_metadata["best_restart_seed"] == 8
+    assert np.isclose(result.secure_metadata["best_objective"], 0.3)
+    assert np.array_equal(result.labels, np.asarray([0, 0], dtype=np.int64))
+
+
 def test_random_projection_spec_is_seeded_and_deterministic() -> None:
     spec_a = build_random_projection_spec(input_dimension=3, requested_components=8, seed=13)
     spec_b = build_random_projection_spec(input_dimension=3, requested_components=8, seed=13)
@@ -464,6 +556,7 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert manifest["normalize_clustering_vector"] is True
     assert manifest["clustering_normalization_mode"] == "l2"
     assert manifest["delta_over_base_norm"] is True
+    assert manifest["num_restarts"] == 5
     assert set(manifest["final_cluster_model_checkpoint_paths"]) == {"0", "1", "2"}
 
     round_one = json.loads((artifacts.cluster_rounds_dir / "round_0001.json").read_text(encoding="utf-8"))
@@ -702,6 +795,7 @@ def test_recommender_clustering_config_defaults_and_validation() -> None:
     assert config.normalize_clustering_vector is True
     assert config.clustering_normalization_mode == "l2"
     assert config.delta_over_base_norm is True
+    assert config.num_restarts == 5
     assert config.enable_pca is True
     assert config.pca_components == 8
 

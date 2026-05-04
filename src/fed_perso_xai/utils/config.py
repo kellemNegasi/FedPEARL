@@ -425,6 +425,7 @@ class RecommenderClusteringConfig:
     clustering_normalization_mode: str = "l2"
     delta_over_base_norm: bool = True
     k: int = 3
+    num_restarts: int = 5
     enable_pca: bool = True
     pca_components: int = 8
     warmup_rounds: int = 0
@@ -443,6 +444,7 @@ class RecommenderClusteringConfig:
         if not isinstance(self.delta_over_base_norm, bool):
             raise TypeError("delta_over_base_norm must be a boolean.")
         _require_integer_at_least("k", self.k, minimum=1)
+        _require_integer_at_least("num_restarts", self.num_restarts, minimum=1)
         if not isinstance(self.enable_pca, bool):
             raise TypeError("enable_pca must be a boolean.")
         _require_integer_at_least("pca_components", self.pca_components, minimum=1)

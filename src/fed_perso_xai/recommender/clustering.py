@@ -183,6 +183,19 @@ class _DerivedHelperPayload:
     payload: np.ndarray
 
 
+@dataclass(frozen=True)
+class _SingleRestartClusterResult:
+    labels: np.ndarray
+    centroids: np.ndarray
+    iterations: int
+    initial_centroid_indices: tuple[int, ...]
+    helper_ids: tuple[int, ...]
+    helper_evaluation_points: tuple[int, ...]
+    objective: float
+    restart_index: int
+    restart_seed: int
+
+
 def _resolve_secure_config_value(
     config: Any,
     *,
@@ -382,16 +395,77 @@ class SecureKMeansClusterer:
 
         protocol = _build_private_clustering_protocol(self.training_config)
         dimension = int(shared_reduced_vectors[0].dimension)
+        restart_results = [
+            self._run_single_restart(
+                shared_reduced_vectors,
+                projection_spec=projection_spec,
+                protocol=protocol,
+                dimension=dimension,
+                clustering_config=clustering_config,
+                restart_index=restart_index,
+                restart_seed=int(seed + restart_index),
+                initial_vectors=initial_vectors,
+            )
+            for restart_index in range(int(clustering_config.num_restarts))
+        ]
+        best_result = min(restart_results, key=lambda result: (float(result.objective), int(result.restart_index)))
+        secure_metadata = {
+            "method": clustering_config.method,
+            "seed": int(seed),
+            "iterations": int(best_result.iterations),
+            "n_clusters": int(clustering_config.k),
+            "num_restarts": int(clustering_config.num_restarts),
+            "best_restart_index": int(best_result.restart_index),
+            "best_restart_seed": int(best_result.restart_seed),
+            "best_objective": float(best_result.objective),
+            "max_iterations": int(clustering_config.max_iterations),
+            "tolerance": float(clustering_config.tolerance),
+            "helper_count": int(len(protocol.helper_ids)),
+            "privacy_threshold": int(protocol.encoding_config.privacy_threshold),
+            "reconstruction_threshold": int(protocol.encoding_config.resolved_reconstruction_threshold),
+            "field_modulus": int(protocol.field_config.modulus),
+            "vector_quantization_scale": int(protocol.vector_scale),
+            "distance_quantization_scale": int(protocol.distance_scale),
+            "helper_ids": [int(value) for value in best_result.helper_ids],
+            "helper_evaluation_points": [
+                int(value) for value in best_result.helper_evaluation_points
+            ],
+            "server_observes_raw_weights": False,
+            "server_observes_reduced_vectors": False,
+            "server_observes_reconstructed_distances": True,
+            "projection_applied": "client_side",
+        }
+        return SecureClusterAssignments(
+            labels=best_result.labels,
+            centroids=best_result.centroids,
+            iterations=int(best_result.iterations),
+            initial_centroid_indices=best_result.initial_centroid_indices,
+            secure_metadata=secure_metadata,
+        )
+
+    def _run_single_restart(
+        self,
+        shared_reduced_vectors: Sequence[SecretSharedReducedVector],
+        *,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
+        protocol: _PrivateClusteringProtocol,
+        dimension: int,
+        clustering_config: RecommenderClusteringConfig,
+        restart_index: int,
+        restart_seed: int,
+        initial_vectors: np.ndarray | None,
+    ) -> _SingleRestartClusterResult:
         current, initial_centroid_indices = _initialize_centroids(
             projection_spec=projection_spec,
             dimension=dimension,
             n_clusters=clustering_config.k,
-            seed=seed,
+            seed=restart_seed,
             initial_vectors=initial_vectors,
         )
         labels = np.zeros(len(shared_reduced_vectors), dtype=np.int64)
         last_distance_helper_ids: tuple[int, ...] = ()
         last_distance_evaluation_points: tuple[int, ...] = ()
+        iteration = 0
         for iteration in range(1, clustering_config.max_iterations + 1):
             distance_matrix, helper_ids, evaluation_points = self._reconstruct_distances(
                 shared_reduced_vectors,
@@ -405,7 +479,7 @@ class SecureKMeansClusterer:
                 current,
                 protocol,
                 clustering_config.k,
-                round_seed=seed + iteration,
+                round_seed=(restart_seed * 10_000) + iteration,
             )
             shift = float(np.linalg.norm(updated - current))
             current = updated
@@ -420,34 +494,17 @@ class SecureKMeansClusterer:
             protocol,
         )
         labels = np.argmin(distance_matrix, axis=1).astype(np.int64, copy=False)
-        secure_metadata = {
-            "method": clustering_config.method,
-            "seed": int(seed),
-            "iterations": int(iteration),
-            "n_clusters": int(clustering_config.k),
-            "max_iterations": int(clustering_config.max_iterations),
-            "tolerance": float(clustering_config.tolerance),
-            "helper_count": int(len(protocol.helper_ids)),
-            "privacy_threshold": int(protocol.encoding_config.privacy_threshold),
-            "reconstruction_threshold": int(protocol.encoding_config.resolved_reconstruction_threshold),
-            "field_modulus": int(protocol.field_config.modulus),
-            "vector_quantization_scale": int(protocol.vector_scale),
-            "distance_quantization_scale": int(protocol.distance_scale),
-            "helper_ids": [int(value) for value in helper_ids or last_distance_helper_ids],
-            "helper_evaluation_points": [
-                int(value) for value in evaluation_points or last_distance_evaluation_points
-            ],
-            "server_observes_raw_weights": False,
-            "server_observes_reduced_vectors": False,
-            "server_observes_reconstructed_distances": True,
-            "projection_applied": "client_side",
-        }
-        return SecureClusterAssignments(
-            labels=labels,
+        objective = float(np.sum(distance_matrix[np.arange(labels.shape[0]), labels], dtype=np.float64))
+        return _SingleRestartClusterResult(
+            labels=labels.astype(np.int64, copy=True),
             centroids=current.astype(np.float64, copy=True),
             iterations=int(iteration),
             initial_centroid_indices=initial_centroid_indices,
-            secure_metadata=secure_metadata,
+            helper_ids=helper_ids or last_distance_helper_ids,
+            helper_evaluation_points=evaluation_points or last_distance_evaluation_points,
+            objective=float(objective),
+            restart_index=int(restart_index),
+            restart_seed=int(restart_seed),
         )
 
     def _reconstruct_distances(

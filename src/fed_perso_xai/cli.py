@@ -406,6 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="When clustering on deltas, normalize by the starting model norm instead of the delta norm.",
     )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
+    recommender_train_parser.add_argument("--clustering-num-restarts", type=int, default=5)
     recommender_train_parser.add_argument(
         "--clustering-enable-pca",
         action=argparse.BooleanOptionalAction,
@@ -837,6 +838,7 @@ def main() -> None:
                     clustering_normalization_mode=args.clustering_normalization_mode,
                     delta_over_base_norm=bool(args.clustering_delta_over_base_norm),
                     k=args.clustering_k,
+                    num_restarts=args.clustering_num_restarts,
                     enable_pca=bool(args.clustering_enable_pca),
                     pca_components=args.clustering_pca_components,
                     warmup_rounds=args.clustering_warmup_rounds,
