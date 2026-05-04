@@ -222,6 +222,45 @@ def compute_weighted_payload_max_abs(
     return max_abs
 
 
+def _max_supported_weighted_payload_abs(spec: SecureAggregationClientSpec) -> float:
+    signed_bound = (int(spec.field_modulus) - 1) // 2
+    return float(signed_bound) / float(spec.quantization_scale)
+
+
+def _encode_secure_payload_or_raise(
+    *,
+    encoder: Any,
+    secure_spec: SecureAggregationClientSpec,
+    shared_parameters: list[np.ndarray],
+    client_id: str,
+    round_id: int,
+    num_examples: int,
+) -> tuple[Any, float]:
+    weighted_payload_max_abs = compute_weighted_payload_max_abs(shared_parameters, int(num_examples))
+    try:
+        encoded_update = encoder.encode(
+            shared_parameters,
+            client_id=client_id,
+            round_id=round_id,
+            weight=int(num_examples),
+        )
+    except ValueError as exc:
+        if "Quantized value exceeds the signed field range" not in str(exc):
+            raise
+        max_supported_weighted_abs = _max_supported_weighted_payload_abs(secure_spec)
+        raise ValueError(
+            "Secure aggregation quantization overflow for client-side encoded payload: "
+            f"client_id={client_id}, round_id={int(round_id)}, num_examples={int(num_examples)}, "
+            f"weighted_payload_max_abs={weighted_payload_max_abs:.6g}, "
+            f"max_supported_weighted_abs={max_supported_weighted_abs:.6g}, "
+            f"scale={int(secure_spec.quantization_scale)}, "
+            f"field_modulus={int(secure_spec.field_modulus)}. "
+            "Lower `secure_quantization_scale`, increase `secure_field_modulus`, "
+            "or reduce the weighted model-update magnitude."
+        ) from exc
+    return encoded_update, float(weighted_payload_max_abs)
+
+
 def normalize_clustering_vector(
     vector: np.ndarray,
     *,
@@ -310,16 +349,14 @@ if fl is not None:
                 ),
             }
             if self._secure_encoder is not None:
-                weighted_payload_max_abs = compute_weighted_payload_max_abs(
-                    shared_payload.shared_parameters,
-                    int(self.data.y_train.shape[0]),
-                )
                 round_id = int(config.get("server_round", 0))
-                encoded_update = self._secure_encoder.encode(
-                    shared_payload.shared_parameters,
+                encoded_update, weighted_payload_max_abs = _encode_secure_payload_or_raise(
+                    encoder=self._secure_encoder,
+                    secure_spec=self._secure_aggregation,
+                    shared_parameters=shared_payload.shared_parameters,
                     client_id=str(self.data.client_id),
                     round_id=round_id,
-                    weight=int(self.data.y_train.shape[0]),
+                    num_examples=int(self.data.y_train.shape[0]),
                 )
                 metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
                 metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
@@ -416,15 +453,13 @@ if fl is not None:
                 raise RuntimeError(
                     "Clustered recommender training requires client-side secure aggregation encoding."
                 )
-            weighted_payload_max_abs = compute_weighted_payload_max_abs(
-                shared_parameters,
-                int(num_examples),
-            )
-            encoded_update = self._secure_encoder.encode(
-                shared_parameters,
+            encoded_update, weighted_payload_max_abs = _encode_secure_payload_or_raise(
+                encoder=self._secure_encoder,
+                secure_spec=self._secure_aggregation,
+                shared_parameters=shared_parameters,
                 client_id=self.data.client_name,
                 round_id=round_id,
-                weight=int(num_examples),
+                num_examples=int(num_examples),
             )
             return encoded_update, float(weighted_payload_max_abs)
 
