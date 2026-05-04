@@ -319,16 +319,18 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     projection_spec_calls: list[tuple[tuple[int, int], int, int]] = []
     captured_projector_calls: list[tuple[str, int]] = []
     secure_aggregate_calls: list[tuple[int, tuple[str, ...]]] = []
-    flatten_many_calls: list[tuple[str, ...]] = []
-
+    import fed_perso_xai.fl.client as client_module
     import fed_perso_xai.fl.recommender_simulation as recommender_simulation
     import fed_perso_xai.recommender.clustering as clustering_module
-    from lcc_lib.aggregation.secure_aggregator import SecureAggregator as LCCSecureAggregator
+    from lcc_lib.aggregation import EncodedShareAggregator as LCCEncodedShareAggregator
 
-    def fake_fit_local_recommender(*, dataset, **kwargs):
-        return fake_local_parameters[dataset.client_name], 0.01
+    def fake_train_shared_payload(self, parameters):
+        return (
+            client_module.extract_shared_parameter_payload(fake_local_parameters[self.data.client_name]),
+            0.01,
+        )
 
-    original_build = ClientSideRandomProjector.build_private_reduced_vector
+    original_build = ClientSideRandomProjector.build_private_reduced_vector_from_flat_vector
     original_projection_builder = recommender_simulation.build_centered_pca_projection_spec
 
     def spy_projection_builder(*, flattened_vectors, requested_components, seed):
@@ -339,23 +341,17 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
             seed=seed,
         )
 
-    original_flatten_many = clustering_module.RecommenderWeightVectorExtractor.flatten_many
-
-    def spy_flatten_many(self, parameter_sets):
-        flatten_many_calls.append(tuple(parameter_sets))
-        return original_flatten_many(self, parameter_sets)
-
-    def spy_build(self, *, client_id, parameters, projection_spec, round_id):
+    def spy_build(self, *, client_id, flat_vector, projection_spec, round_id):
         captured_projector_calls.append((str(client_id), int(round_id)))
         return original_build(
             self,
             client_id=client_id,
-            parameters=parameters,
+            flat_vector=flat_vector,
             projection_spec=projection_spec,
             round_id=round_id,
         )
 
-    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config, initial_vectors=None):
         assert clustering_config.k == 3
         assert clustering_config.pca_components == 8
         assert isinstance(projection_spec, PCAProjectionSpec)
@@ -385,18 +381,19 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
             },
         )
 
-    original_secure_aggregate = LCCSecureAggregator.aggregate
+    original_secure_aggregate = LCCEncodedShareAggregator.aggregate_encoded
 
-    def spy_secure_aggregate(self, client_vectors, round_id, client_ids=None):
-        secure_aggregate_calls.append((int(round_id), tuple(client_ids or ())))
-        return original_secure_aggregate(self, client_vectors, round_id, client_ids)
+    def spy_secure_aggregate(self, encoded_updates, round_id):
+        secure_aggregate_calls.append(
+            (int(round_id), tuple(str(update.client_id) for update in encoded_updates))
+        )
+        return original_secure_aggregate(self, encoded_updates, round_id=round_id)
 
-    monkeypatch.setattr(recommender_simulation, "_fit_local_recommender", fake_fit_local_recommender)
+    monkeypatch.setattr(client_module.FederatedPairwiseRecommenderClient, "_train_shared_payload", fake_train_shared_payload)
     monkeypatch.setattr(recommender_simulation, "build_centered_pca_projection_spec", spy_projection_builder)
-    monkeypatch.setattr(clustering_module.RecommenderWeightVectorExtractor, "flatten_many", spy_flatten_many)
-    monkeypatch.setattr(clustering_module.ClientSideRandomProjector, "build_private_reduced_vector", spy_build)
+    monkeypatch.setattr(clustering_module.ClientSideRandomProjector, "build_private_reduced_vector_from_flat_vector", spy_build)
     monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
-    monkeypatch.setattr(LCCSecureAggregator, "aggregate", spy_secure_aggregate)
+    monkeypatch.setattr(LCCEncodedShareAggregator, "aggregate_encoded", spy_secure_aggregate)
 
     artifacts, metadata = train_federated_recommender(
         RecommenderFederatedTrainingConfig(
@@ -419,10 +416,6 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert metadata["training_variant"] == "clustered"
     assert artifacts.run_dir.name == "clustered"
     assert projection_spec_calls == [((4, 3), 8, 13), ((4, 3), 8, 14)]
-    assert flatten_many_calls == [
-        ("client_000", "client_001", "client_002", "client_003"),
-        ("client_000", "client_001", "client_002", "client_003"),
-    ]
     assert len(captured_projector_calls) == 8
     assert {call[0] for call in captured_projector_calls} == {
         "client_000",
@@ -494,7 +487,7 @@ def test_clustered_recommender_training_can_skip_pca(
     def fail_if_pca_builder_called(**kwargs):
         raise AssertionError("PCA builder should not be called when clustering.enable_pca is False.")
 
-    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config, initial_vectors=None):
         assert clustering_config.enable_pca is False
         assert isinstance(projection_spec, IdentityProjectionSpec)
         assert all(item.dimension == 3 for item in shared_reduced_vectors)
@@ -559,7 +552,7 @@ def test_clustered_recommender_training_reports_raw_weight_visibility_when_pca_i
 
     import fed_perso_xai.recommender.clustering as clustering_module
 
-    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config, initial_vectors=None):
         assert clustering_config.enable_pca is True
         assert isinstance(projection_spec, PCAProjectionSpec)
         labels = np.asarray([0, 1, 2], dtype=np.int64)
@@ -619,7 +612,7 @@ def test_clustered_recommender_training_supports_both_backends(
 
     import fed_perso_xai.recommender.clustering as clustering_module
 
-    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config, initial_vectors=None):
         labels = np.asarray([0, 1, 2], dtype=np.int64)
         return SecureClusterAssignments(
             labels=labels,

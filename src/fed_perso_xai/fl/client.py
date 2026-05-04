@@ -93,6 +93,18 @@ class SecureAggregationClientSpec:
     seed: int = 0
 
 
+@dataclass(frozen=True)
+class ClusteredRecommenderClientUpdate:
+    """Client-side clustered training outputs consumed by the coordinator."""
+
+    client_id: str
+    num_examples: int
+    train_loss: float
+    encoded_model_update: Any
+    weighted_payload_max_abs: float
+    raw_clustering_vector: np.ndarray | None = None
+
+
 SECURE_PAYLOAD_ENCODING_KEY = "secure_payload_encoding"
 SECURE_PAYLOAD_ENCODING_VALUE = "lcc_helper_shares_v1"
 SECURE_PAYLOAD_LAYOUT_KEY = "secure_payload_layout"
@@ -129,11 +141,15 @@ def apply_shared_parameter_payload(
     return merged
 
 
-def build_secure_aggregation_client_spec(training_config: Any) -> SecureAggregationClientSpec:
+def build_secure_aggregation_client_spec(
+    training_config: Any,
+    *,
+    force_enabled: bool = False,
+) -> SecureAggregationClientSpec:
     """Build the secure client spec from a training config-like object."""
 
     return SecureAggregationClientSpec(
-        enabled=bool(getattr(training_config, "secure_aggregation", False)),
+        enabled=bool(force_enabled or getattr(training_config, "secure_aggregation", False)),
         num_helpers=int(getattr(training_config, "secure_num_helpers")),
         privacy_threshold=int(getattr(training_config, "secure_privacy_threshold")),
         reconstruction_threshold=getattr(training_config, "secure_reconstruction_threshold"),
@@ -339,9 +355,67 @@ if fl is not None:
                 n_features=data.X_train.shape[1],
                 config=model_config,
             )
+            self._last_clustering_vector: np.ndarray | None = None
 
         def get_parameters(self, config: dict[str, Any]) -> list[np.ndarray]:
             return extract_shared_parameter_payload(self.model.get_parameters()).shared_parameters
+
+        def _train_shared_payload(
+            self,
+            parameters: list[np.ndarray],
+        ) -> tuple[SharedParameterPayload, float]:
+            merged_parameters = apply_shared_parameter_payload(
+                self.model.get_parameters(),
+                parameters,
+            )
+            self.model.set_parameters(merged_parameters)
+            train_loss = self.model.fit(
+                self.data.X_train,
+                self.data.y_train,
+                seed=self.seed + self.data.client_id,
+            )
+            return extract_shared_parameter_payload(self.model.get_parameters()), float(train_loss)
+
+        def _encode_shared_payload(
+            self,
+            shared_parameters: list[np.ndarray],
+            *,
+            round_id: int,
+            num_examples: int,
+        ) -> tuple[Any, float]:
+            if self._secure_encoder is None:
+                raise RuntimeError(
+                    "Clustered recommender training requires client-side secure aggregation encoding."
+                )
+            weighted_payload_max_abs = compute_weighted_payload_max_abs(
+                shared_parameters,
+                int(num_examples),
+            )
+            encoded_update = self._secure_encoder.encode(
+                shared_parameters,
+                client_id=self.data.client_name,
+                round_id=round_id,
+                weight=int(num_examples),
+            )
+            return encoded_update, float(weighted_payload_max_abs)
+
+        def _compute_clustering_vector(
+            self,
+            *,
+            shared_parameters: list[np.ndarray],
+            base_parameters: list[np.ndarray],
+            representation: str,
+        ) -> np.ndarray:
+            from fed_perso_xai.recommender.clustering import RecommenderWeightVectorExtractor
+
+            extractor = RecommenderWeightVectorExtractor()
+            fitted_vector = extractor.flatten(shared_parameters)
+            normalized_representation = str(representation).strip().lower()
+            if normalized_representation == "model":
+                return fitted_vector
+            if normalized_representation == "delta":
+                return fitted_vector - extractor.flatten(base_parameters)
+            raise ValueError(f"Unsupported clustering representation {representation!r}.")
 
         def fit(
             self,
@@ -353,17 +427,7 @@ if fl is not None:
                 self.data.client_name,
                 int(self.data.y_train.shape[0]),
             )
-            merged_parameters = apply_shared_parameter_payload(
-                self.model.get_parameters(),
-                parameters,
-            )
-            self.model.set_parameters(merged_parameters)
-            train_loss = self.model.fit(
-                self.data.X_train,
-                self.data.y_train,
-                seed=self.seed + self.data.client_id,
-            )
-            shared_payload = extract_shared_parameter_payload(self.model.get_parameters())
+            shared_payload, train_loss = self._train_shared_payload(parameters)
             metrics: dict[str, Any] = {
                 "train_loss": float(train_loss),
                 "client_id": self.data.client_name,
@@ -380,16 +444,11 @@ if fl is not None:
                 float(train_loss),
             )
             if self._secure_encoder is not None:
-                weighted_payload_max_abs = compute_weighted_payload_max_abs(
-                    shared_payload.shared_parameters,
-                    int(self.data.y_train.shape[0]),
-                )
                 round_id = int(config.get("server_round", 0))
-                encoded_update = self._secure_encoder.encode(
+                encoded_update, weighted_payload_max_abs = self._encode_shared_payload(
                     shared_payload.shared_parameters,
-                    client_id=self.data.client_name,
                     round_id=round_id,
-                    weight=int(self.data.y_train.shape[0]),
+                    num_examples=int(self.data.y_train.shape[0]),
                 )
                 metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
                 metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
@@ -406,6 +465,73 @@ if fl is not None:
                 shared_payload.shared_parameters,
                 int(self.data.y_train.shape[0]),
                 metrics,
+            )
+
+        def fit_clustered(
+            self,
+            parameters: list[np.ndarray],
+            config: dict[str, Any],
+            *,
+            representation: str,
+            include_raw_clustering_vector: bool,
+        ) -> ClusteredRecommenderClientUpdate:
+            LOGGER.info(
+                "Clustered recommender fit start client=%s train_pairs=%s include_raw_clustering_vector=%s",
+                self.data.client_name,
+                int(self.data.y_train.shape[0]),
+                bool(include_raw_clustering_vector),
+            )
+            shared_payload, train_loss = self._train_shared_payload(parameters)
+            round_id = int(config.get("server_round", 0))
+            num_examples = int(self.data.y_train.shape[0])
+            encoded_update, weighted_payload_max_abs = self._encode_shared_payload(
+                shared_payload.shared_parameters,
+                round_id=round_id,
+                num_examples=num_examples,
+            )
+            self._last_clustering_vector = self._compute_clustering_vector(
+                shared_parameters=shared_payload.shared_parameters,
+                base_parameters=parameters,
+                representation=representation,
+            )
+            LOGGER.info(
+                "Clustered recommender fit complete client=%s train_pairs=%s train_loss=%.6f",
+                self.data.client_name,
+                num_examples,
+                float(train_loss),
+            )
+            raw_clustering_vector = (
+                np.asarray(self._last_clustering_vector, dtype=np.float64).copy()
+                if include_raw_clustering_vector
+                else None
+            )
+            return ClusteredRecommenderClientUpdate(
+                client_id=self.data.client_name,
+                num_examples=num_examples,
+                train_loss=float(train_loss),
+                encoded_model_update=encoded_update,
+                weighted_payload_max_abs=float(weighted_payload_max_abs),
+                raw_clustering_vector=raw_clustering_vector,
+            )
+
+        def build_last_private_clustering_vector(
+            self,
+            *,
+            projection_spec: Any,
+            round_id: int,
+        ) -> Any:
+            from fed_perso_xai.recommender.clustering import ClientSideRandomProjector
+
+            if self._last_clustering_vector is None:
+                raise RuntimeError(
+                    f"No clustering representation is available for client {self.data.client_name}."
+                )
+            projector = ClientSideRandomProjector(self._secure_aggregation)
+            return projector.build_private_reduced_vector_from_flat_vector(
+                client_id=self.data.client_name,
+                flat_vector=self._last_clustering_vector,
+                projection_spec=projection_spec,
+                round_id=int(round_id),
             )
 
         def evaluate(
@@ -470,5 +596,6 @@ else:
             model_config: PairwiseLogisticConfig,
             seed: int,
             recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+            secure_aggregation: SecureAggregationClientSpec | None = None,
         ) -> None:
             raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)

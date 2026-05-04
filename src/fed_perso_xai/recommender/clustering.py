@@ -183,6 +183,21 @@ class _DerivedHelperPayload:
     payload: np.ndarray
 
 
+def _resolve_secure_config_value(
+    config: Any,
+    *,
+    secure_name: str,
+    fallback_name: str,
+) -> Any:
+    if hasattr(config, secure_name):
+        return getattr(config, secure_name)
+    if hasattr(config, fallback_name):
+        return getattr(config, fallback_name)
+    raise AttributeError(
+        f"Missing secure aggregation setting '{secure_name}'/'{fallback_name}' on {type(config).__name__}."
+    )
+
+
 class RecommenderWeightVectorExtractor:
     """Flatten full recommender parameter payloads into one vector per client."""
 
@@ -298,7 +313,7 @@ def build_identity_projection_spec(
 class ClientSideRandomProjector:
     """Client-local flatten -> random projection -> secret sharing for clustered training."""
 
-    def __init__(self, training_config: RecommenderFederatedTrainingConfig) -> None:
+    def __init__(self, training_config: Any) -> None:
         self.training_config = training_config
         self.extractor = RecommenderWeightVectorExtractor()
 
@@ -530,16 +545,17 @@ class SecureClusterModelAggregator:
     def aggregate(
         self,
         *,
-        client_parameters: Mapping[str, Sequence[np.ndarray]],
+        client_updates: Mapping[str, Any],
         client_weights: Mapping[str, int | float],
+        client_weighted_payload_bounds: Mapping[str, float],
         assignments: Mapping[str, int],
         round_id: int,
         cluster_count: int,
         fallback_parameters: Mapping[int, Sequence[np.ndarray]],
+        min_contributors: int = 2,
     ) -> dict[int, ClusterAggregationResult]:
-        aggregator = _build_secure_round_aggregator(self.training_config)
+        aggregator = _build_pre_encoded_secure_round_aggregator(self.training_config)
         results: dict[int, ClusterAggregationResult] = {}
-        min_contributors = 2
         for cluster_id in range(cluster_count):
             member_ids = [
                 client_id
@@ -571,21 +587,31 @@ class SecureClusterModelAggregator:
             total_weight = float(sum(float(client_weights[client_id]) for client_id in member_ids))
             if total_weight <= 0.0:
                 raise ValueError(f"Cluster {cluster_id} requires a positive total client weight.")
-            weighted_payloads = [
-                _scale_parameter_set(
-                    client_parameters[client_id],
-                    float(client_weights[client_id]) / total_weight,
-                )
-                for client_id in member_ids
-            ]
-            secure_result = aggregator.aggregate(
-                weighted_payloads,
+            max_component_l1 = _validate_cluster_encoded_aggregate_bound(
+                member_ids=member_ids,
+                client_weighted_payload_bounds=client_weighted_payload_bounds,
+                quantization_scale=int(
+                    _resolve_secure_config_value(
+                        self.training_config,
+                        secure_name="secure_quantization_scale",
+                        fallback_name="quantization_scale",
+                    )
+                ),
+                field_modulus=int(
+                    _resolve_secure_config_value(
+                        self.training_config,
+                        secure_name="secure_field_modulus",
+                        fallback_name="field_modulus",
+                    )
+                ),
+            )
+            secure_result = aggregator.aggregate_encoded(
+                [client_updates[client_id] for client_id in member_ids],
                 round_id=(int(round_id) * 10_000) + cluster_id,
-                client_ids=list(member_ids),
             )
             results[cluster_id] = ClusterAggregationResult(
                 parameters=[
-                    np.asarray(parameter, dtype=np.float64).copy()
+                    np.asarray(parameter, dtype=np.float64).copy() / total_weight
                     for parameter in secure_result.aggregated_tensors
                 ],
                 metadata={
@@ -599,8 +625,21 @@ class SecureClusterModelAggregator:
                     "helper_evaluation_points": [
                         int(value) for value in secure_result.helper_evaluation_points
                     ],
-                    "field_modulus": int(self.training_config.secure_field_modulus),
-                    "quantization_scale": int(self.training_config.secure_quantization_scale),
+                    "field_modulus": int(
+                        _resolve_secure_config_value(
+                            self.training_config,
+                            secure_name="secure_field_modulus",
+                            fallback_name="field_modulus",
+                        )
+                    ),
+                    "quantization_scale": int(
+                        _resolve_secure_config_value(
+                            self.training_config,
+                            secure_name="secure_quantization_scale",
+                            fallback_name="quantization_scale",
+                        )
+                    ),
+                    "max_component_l1": float(max_component_l1),
                     "max_abs_error": float(secure_result.max_abs_error),
                 },
             )
@@ -714,12 +753,9 @@ def _scale_parameter_set(
     return [np.asarray(parameter, dtype=np.float64) * float(factor) for parameter in parameters]
 
 
-def _build_secure_round_aggregator(training_config: RecommenderFederatedTrainingConfig) -> Any:
+def _build_pre_encoded_secure_round_aggregator(training_config: Any) -> Any:
     try:
-        from lcc_lib.aggregation.secure_aggregator import (
-            SecureAggregationConfig,
-            SecureAggregator,
-        )
+        from lcc_lib.aggregation import EncodedShareAggregator, SecureAggregationConfig
         from lcc_lib.coding.field_ops import FieldConfig
         from lcc_lib.coding.share_codec import ShareEncodingConfig
         from lcc_lib.quantization.quantizer import QuantizationConfig
@@ -729,18 +765,60 @@ def _build_secure_round_aggregator(training_config: RecommenderFederatedTraining
             "for example with `python3 -m pip install ../lcc-lib`."
         ) from exc
 
-    return SecureAggregator(
+    return EncodedShareAggregator(
         SecureAggregationConfig(
-            field_config=FieldConfig(modulus=training_config.secure_field_modulus),
+            field_config=FieldConfig(
+                modulus=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_field_modulus",
+                        fallback_name="field_modulus",
+                    )
+                )
+            ),
             quantization=QuantizationConfig(
-                field_modulus=training_config.secure_field_modulus,
-                scale=training_config.secure_quantization_scale,
+                field_modulus=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_field_modulus",
+                        fallback_name="field_modulus",
+                    )
+                ),
+                scale=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_quantization_scale",
+                        fallback_name="quantization_scale",
+                    )
+                ),
             ),
             encoding=ShareEncodingConfig(
-                num_helpers=training_config.secure_num_helpers,
-                privacy_threshold=training_config.secure_privacy_threshold,
-                reconstruction_threshold=training_config.secure_reconstruction_threshold,
-                seed=training_config.secure_seed,
+                num_helpers=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_num_helpers",
+                        fallback_name="num_helpers",
+                    )
+                ),
+                privacy_threshold=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_privacy_threshold",
+                        fallback_name="privacy_threshold",
+                    )
+                ),
+                reconstruction_threshold=_resolve_secure_config_value(
+                    training_config,
+                    secure_name="secure_reconstruction_threshold",
+                    fallback_name="reconstruction_threshold",
+                ),
+                seed=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_seed",
+                        fallback_name="seed",
+                    )
+                ),
             ),
             compute_mean=False,
         )
@@ -748,7 +826,7 @@ def _build_secure_round_aggregator(training_config: RecommenderFederatedTraining
 
 
 def _build_private_clustering_protocol(
-    training_config: RecommenderFederatedTrainingConfig,
+    training_config: Any,
 ) -> _PrivateClusteringProtocol:
     try:
         from lcc_lib.coding.field_ops import FieldConfig
@@ -761,26 +839,66 @@ def _build_private_clustering_protocol(
             "for example with `python3 -m pip install ../lcc-lib`."
         ) from exc
 
-    vector_scale = max(1, math.isqrt(int(training_config.secure_quantization_scale)))
+    quantization_scale = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_quantization_scale",
+            fallback_name="quantization_scale",
+        )
+    )
+    field_modulus = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_field_modulus",
+            fallback_name="field_modulus",
+        )
+    )
+    num_helpers = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_num_helpers",
+            fallback_name="num_helpers",
+        )
+    )
+    privacy_threshold = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_privacy_threshold",
+            fallback_name="privacy_threshold",
+        )
+    )
+    reconstruction_threshold = _resolve_secure_config_value(
+        training_config,
+        secure_name="secure_reconstruction_threshold",
+        fallback_name="reconstruction_threshold",
+    )
+    secure_seed = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_seed",
+            fallback_name="seed",
+        )
+    )
+    vector_scale = max(1, math.isqrt(quantization_scale))
     distance_scale = max(1, vector_scale * vector_scale)
-    field_config = FieldConfig(modulus=training_config.secure_field_modulus)
+    field_config = FieldConfig(modulus=field_modulus)
     encoding_config = ShareEncodingConfig(
-        num_helpers=training_config.secure_num_helpers,
-        privacy_threshold=training_config.secure_privacy_threshold,
-        reconstruction_threshold=training_config.secure_reconstruction_threshold,
-        seed=training_config.secure_seed,
+        num_helpers=num_helpers,
+        privacy_threshold=privacy_threshold,
+        reconstruction_threshold=reconstruction_threshold,
+        seed=secure_seed,
     )
     return _PrivateClusteringProtocol(
         field_config=field_config,
         vector_quantizer=Quantizer(
             QuantizationConfig(
-                field_modulus=training_config.secure_field_modulus,
+                field_modulus=field_modulus,
                 scale=vector_scale,
             )
         ),
         distance_quantizer=Quantizer(
             QuantizationConfig(
-                field_modulus=training_config.secure_field_modulus,
+                field_modulus=field_modulus,
                 scale=distance_scale,
             )
         ),
@@ -792,6 +910,36 @@ def _build_private_clustering_protocol(
         vector_scale=int(vector_scale),
         distance_scale=int(distance_scale),
     )
+
+
+def _validate_cluster_encoded_aggregate_bound(
+    *,
+    member_ids: Sequence[str],
+    client_weighted_payload_bounds: Mapping[str, float],
+    quantization_scale: int,
+    field_modulus: int,
+) -> float:
+    if quantization_scale < 1:
+        raise ValueError("quantization_scale must be at least 1.")
+    if field_modulus <= 2:
+        raise ValueError("field_modulus must be greater than 2.")
+    weighted_payload_bounds: list[float] = []
+    for client_id in member_ids:
+        bound_value = float(client_weighted_payload_bounds[client_id])
+        if not np.isfinite(bound_value):
+            raise ValueError("Secure aggregation weighted payload bounds must be finite.")
+        if bound_value < 0.0:
+            raise ValueError("Secure aggregation weighted payload bounds must be non-negative.")
+        weighted_payload_bounds.append(bound_value)
+    total_max_abs_bound = float(sum(weighted_payload_bounds))
+    signed_bound = (field_modulus - 1) // 2
+    if total_max_abs_bound * float(quantization_scale) > float(signed_bound):
+        raise ValueError(
+            "Secure aggregation aggregate may overflow the finite field under the current "
+            f"bound estimate (sum_client_max_abs={total_max_abs_bound:.6g}, "
+            f"scale={quantization_scale}, signed_bound={signed_bound})."
+        )
+    return total_max_abs_bound
 
 
 def _build_share_encoder(
