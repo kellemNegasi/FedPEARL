@@ -47,7 +47,7 @@ models:
 training:
   rounds: 200
   strategy: fedavg
-  simulation_backend: debug-sequential
+  simulation_backend: ray
   fit_fraction: 1.0
   evaluate_fraction: 1.0
   prediction_threshold: 0.5
