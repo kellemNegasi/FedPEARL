@@ -26,7 +26,11 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
     ServerAppComponents = None  # type: ignore[assignment]
     ServerConfig = None  # type: ignore[assignment]
 
-from fed_perso_xai.fl.client import ClientData, FederatedLogisticRegressionClient
+from fed_perso_xai.fl.client import (
+    ClientData,
+    FederatedLogisticRegressionClient,
+    build_secure_aggregation_client_spec,
+)
 from fed_perso_xai.fl.strategy import (
     FederatedRunRecorder,
     StrategyFactory,
@@ -225,6 +229,7 @@ def _run_flower_simulation(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
 
     def client_fn(context: fl.common.Context):
@@ -235,6 +240,7 @@ def _run_flower_simulation(
             model_config=config.model,
             seed=config.seed,
             prediction_threshold=config.prediction_threshold,
+            secure_aggregation=secure_client_spec,
         )
         return client.to_client()
 
@@ -277,6 +283,7 @@ def _run_debug_sequential_runtime(
 ) -> list[np.ndarray]:
     require_flower_support()
     strategy = strategy_factory.create(initial_parameters, recorder)
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     clients = [
         FederatedLogisticRegressionClient(
             data=dataset,
@@ -284,6 +291,7 @@ def _run_debug_sequential_runtime(
             model_config=config.model,
             seed=config.seed,
             prediction_threshold=config.prediction_threshold,
+            secure_aggregation=secure_client_spec,
         )
         for dataset in client_datasets
     ]
@@ -299,7 +307,10 @@ def _run_debug_sequential_runtime(
         fit_indices = rng.choice(len(clients), size=fit_sample_size, replace=False)
         fit_results = []
         for client_index in fit_indices:
-            updated_parameters, num_examples, metrics = clients[client_index].fit(parameters, {})
+            updated_parameters, num_examples, metrics = clients[client_index].fit(
+                parameters,
+                {"server_round": int(server_round)},
+            )
             fit_results.append(
                 (
                     None,

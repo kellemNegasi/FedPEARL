@@ -11,7 +11,11 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from fed_perso_xai.fl.client import FederatedPairwiseRecommenderClient, RecommenderClientData
+from fed_perso_xai.fl.client import (
+    FederatedPairwiseRecommenderClient,
+    RecommenderClientData,
+    build_secure_aggregation_client_spec,
+)
 from fed_perso_xai.fl.simulation import (
     ClientApp,
     ServerApp,
@@ -273,6 +277,7 @@ def _run_flower_recommender_simulation(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
 
     def client_fn(context: Any):
@@ -282,6 +287,7 @@ def _run_flower_recommender_simulation(
             model_config=model_config,
             seed=config.seed,
             recommender_type=config.recommender_type,
+            secure_aggregation=secure_client_spec,
         )
         return client.to_client()
 
@@ -325,12 +331,14 @@ def _run_debug_sequential_recommender_runtime(
 ) -> list[np.ndarray]:
     require_flower_support()
     strategy = strategy_factory.create(initial_parameters, recorder)
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     clients = [
         FederatedPairwiseRecommenderClient(
             data=dataset,
             model_config=model_config,
             seed=config.seed,
             recommender_type=config.recommender_type,
+            secure_aggregation=secure_client_spec,
         )
         for dataset in client_datasets
     ]
@@ -346,7 +354,10 @@ def _run_debug_sequential_recommender_runtime(
         fit_indices = rng.choice(len(clients), size=fit_sample_size, replace=False)
         fit_results = []
         for client_index in fit_indices:
-            updated_parameters, num_examples, metrics = clients[client_index].fit(parameters, {})
+            updated_parameters, num_examples, metrics = clients[client_index].fit(
+                parameters,
+                {"server_round": int(server_round)},
+            )
             fit_results.append(
                 (
                     None,

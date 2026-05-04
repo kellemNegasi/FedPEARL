@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -79,6 +80,25 @@ class SharedParameterPayload:
     total_parameter_count: int
 
 
+@dataclass(frozen=True)
+class SecureAggregationClientSpec:
+    """Client-local secure aggregation settings for encoded helper-share output."""
+
+    enabled: bool = False
+    num_helpers: int = 5
+    privacy_threshold: int = 2
+    reconstruction_threshold: int | None = None
+    field_modulus: int = 2_147_483_647
+    quantization_scale: int = 1 << 16
+    seed: int = 0
+
+
+SECURE_PAYLOAD_ENCODING_KEY = "secure_payload_encoding"
+SECURE_PAYLOAD_ENCODING_VALUE = "lcc_helper_shares_v1"
+SECURE_PAYLOAD_LAYOUT_KEY = "secure_payload_layout"
+SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY = "secure_weighted_payload_max_abs"
+
+
 def extract_shared_parameter_payload(parameters: list[np.ndarray]) -> SharedParameterPayload:
     """Return the model tensors that should be aggregated by the server."""
 
@@ -109,6 +129,82 @@ def apply_shared_parameter_payload(
     return merged
 
 
+def build_secure_aggregation_client_spec(training_config: Any) -> SecureAggregationClientSpec:
+    """Build the secure client spec from a training config-like object."""
+
+    return SecureAggregationClientSpec(
+        enabled=bool(getattr(training_config, "secure_aggregation", False)),
+        num_helpers=int(getattr(training_config, "secure_num_helpers")),
+        privacy_threshold=int(getattr(training_config, "secure_privacy_threshold")),
+        reconstruction_threshold=getattr(training_config, "secure_reconstruction_threshold"),
+        field_modulus=int(getattr(training_config, "secure_field_modulus")),
+        quantization_scale=int(getattr(training_config, "secure_quantization_scale")),
+        seed=int(getattr(training_config, "secure_seed")),
+    )
+
+
+def serialize_secure_payload_layout(layout: Any) -> str:
+    """Serialize `lcc-lib` flattened tensor layout metadata into a metrics-safe string."""
+
+    shapes = [list(entry.shape) for entry in getattr(layout, "entries")]
+    return json.dumps(shapes, separators=(",", ":"))
+
+
+def deserialize_secure_payload_layout(payload: str) -> Any:
+    """Deserialize secure payload layout metadata produced by `serialize_secure_payload_layout`."""
+
+    from lcc_lib.aggregation.flattening import FlattenedTensorLayout, TensorLayoutEntry
+
+    shape_rows = json.loads(payload)
+    entries = tuple(
+        TensorLayoutEntry(
+            shape=tuple(int(value) for value in shape_row),
+            size=int(np.prod(shape_row, dtype=np.int64)),
+        )
+        for shape_row in shape_rows
+    )
+    return FlattenedTensorLayout(entries=entries)
+
+
+def _build_client_secure_encoder(spec: SecureAggregationClientSpec) -> Any:
+    from lcc_lib.aggregation import ClientPayloadEncoder, SecureAggregationConfig
+    from lcc_lib.coding.field_ops import FieldConfig
+    from lcc_lib.coding.share_codec import ShareEncodingConfig
+    from lcc_lib.quantization.quantizer import QuantizationConfig
+
+    return ClientPayloadEncoder(
+        SecureAggregationConfig(
+            field_config=FieldConfig(modulus=spec.field_modulus),
+            quantization=QuantizationConfig(
+                field_modulus=spec.field_modulus,
+                scale=spec.quantization_scale,
+            ),
+            encoding=ShareEncodingConfig(
+                num_helpers=spec.num_helpers,
+                privacy_threshold=spec.privacy_threshold,
+                reconstruction_threshold=spec.reconstruction_threshold,
+                seed=spec.seed,
+            ),
+            compute_mean=False,
+        )
+    )
+
+
+def compute_weighted_payload_max_abs(
+    parameters: list[np.ndarray],
+    weight: int | float,
+) -> float:
+    """Return a safe per-client absolute bound for the weighted secure payload."""
+
+    scaled = [np.asarray(parameter, dtype=np.float64) * float(weight) for parameter in parameters]
+    if not scaled:
+        raise ValueError("parameters must contain at least one tensor.")
+    max_abs = max(float(np.max(np.abs(parameter))) for parameter in scaled)
+    if not np.isfinite(max_abs):
+        raise ValueError("weighted secure payload must be finite.")
+    return max_abs
+
+
 if fl is not None:
 
     class FederatedLogisticRegressionClient(fl.client.NumPyClient):
@@ -121,10 +217,17 @@ if fl is not None:
             model_config: Any,
             seed: int,
             prediction_threshold: float = 0.5,
+            secure_aggregation: SecureAggregationClientSpec | None = None,
         ) -> None:
             self.data = data
             self.seed = seed
             self.prediction_threshold = float(prediction_threshold)
+            self._secure_aggregation = secure_aggregation or SecureAggregationClientSpec()
+            self._secure_encoder = (
+                _build_client_secure_encoder(self._secure_aggregation)
+                if self._secure_aggregation.enabled
+                else None
+            )
             self.model = create_model(
                 model_name,
                 n_features=data.X_train.shape[1],
@@ -161,6 +264,29 @@ if fl is not None:
                     str(index) for index in shared_payload.shared_parameter_indices
                 ),
             }
+            if self._secure_encoder is not None:
+                weighted_payload_max_abs = compute_weighted_payload_max_abs(
+                    shared_payload.shared_parameters,
+                    int(self.data.y_train.shape[0]),
+                )
+                round_id = int(config.get("server_round", 0))
+                encoded_update = self._secure_encoder.encode(
+                    shared_payload.shared_parameters,
+                    client_id=str(self.data.client_id),
+                    round_id=round_id,
+                    weight=int(self.data.y_train.shape[0]),
+                )
+                metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
+                metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
+                metrics[SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY] = float(weighted_payload_max_abs)
+                return (
+                    [
+                        np.asarray(share.payload, dtype=np.int64).copy()
+                        for share in encoded_update.helper_shares
+                    ],
+                    int(self.data.y_train.shape[0]),
+                    metrics,
+                )
             return (
                 shared_payload.shared_parameters,
                 int(self.data.y_train.shape[0]),
@@ -198,9 +324,16 @@ if fl is not None:
             model_config: PairwiseLogisticConfig,
             seed: int,
             recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+            secure_aggregation: SecureAggregationClientSpec | None = None,
         ) -> None:
             self.data = data
             self.seed = int(seed)
+            self._secure_aggregation = secure_aggregation or SecureAggregationClientSpec()
+            self._secure_encoder = (
+                _build_client_secure_encoder(self._secure_aggregation)
+                if self._secure_aggregation.enabled
+                else None
+            )
             self.model = create_recommender(
                 recommender_type=recommender_type,
                 n_features=data.X_train.shape[1],
@@ -246,6 +379,29 @@ if fl is not None:
                 int(self.data.y_train.shape[0]),
                 float(train_loss),
             )
+            if self._secure_encoder is not None:
+                weighted_payload_max_abs = compute_weighted_payload_max_abs(
+                    shared_payload.shared_parameters,
+                    int(self.data.y_train.shape[0]),
+                )
+                round_id = int(config.get("server_round", 0))
+                encoded_update = self._secure_encoder.encode(
+                    shared_payload.shared_parameters,
+                    client_id=self.data.client_name,
+                    round_id=round_id,
+                    weight=int(self.data.y_train.shape[0]),
+                )
+                metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
+                metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
+                metrics[SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY] = float(weighted_payload_max_abs)
+                return (
+                    [
+                        np.asarray(share.payload, dtype=np.int64).copy()
+                        for share in encoded_update.helper_shares
+                    ],
+                    int(self.data.y_train.shape[0]),
+                    metrics,
+                )
             return (
                 shared_payload.shared_parameters,
                 int(self.data.y_train.shape[0]),
@@ -316,4 +472,3 @@ else:
             recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
         ) -> None:
             raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
-

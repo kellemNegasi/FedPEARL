@@ -6,12 +6,14 @@ import numpy as np
 import pytest
 
 from fed_perso_xai.fl.client import (
+    SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
     apply_shared_parameter_payload,
     extract_shared_parameter_payload,
 )
 from fed_perso_xai.fl.strategy import (
     _build_secure_aggregator,
     _plan_secure_quantization,
+    _validate_encoded_secure_aggregate_bound,
     _weighted_average_parameter_sets,
 )
 from fed_perso_xai.models import load_global_model
@@ -117,6 +119,34 @@ def test_secure_quantization_plan_reduces_scale_when_payloads_would_overflow() -
     assert plan.effective_scale < plan.requested_scale
     assert plan.effective_scale == 138_045_476
     assert plan.max_component_l1 == pytest.approx(11.0)
+
+
+def test_encoded_secure_aggregate_bound_rejects_potential_field_wraparound() -> None:
+    fit_results = [
+        (
+            None,
+            type(
+                "FitResStub",
+                (),
+                {"metrics": {SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY: 4.0}, "num_examples": 1},
+            )(),
+        ),
+        (
+            None,
+            type(
+                "FitResStub",
+                (),
+                {"metrics": {SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY: 4.0}, "num_examples": 1},
+            )(),
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="aggregate may overflow the finite field"):
+        _validate_encoded_secure_aggregate_bound(
+            fit_results,
+            quantization_scale=10,
+            field_modulus=101,
+        )
 
 
 def test_secure_aggregator_handles_large_modulus_with_many_helpers() -> None:
