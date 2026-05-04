@@ -662,3 +662,241 @@ Current tests cover:
 - real Flower simulation smoke execution when the `ray` extra is installed
 
 Explain/evaluate Parquet integration tests require `pyarrow`, which is part of the base project dependencies. If the local environment was not installed with project dependencies, those tests are skipped.
+
+
+## Running on HPC
+
+The HPC flow is asynchronous. Each command below submits one or more Slurm jobs and returns immediately, so wait for a stage to finish before starting the next one.
+
+Two important conventions:
+
+- `selection_id` must match `explain_eval.split`, `explain_eval.max_instances`, and `explain_eval.random_state` from your launcher config. With the example `configs/job_launcher.yml`, the matching selection is `test__max-40__seed-42`.
+- Several helper wrappers in `scripts/` currently contain a hardcoded `RUN_IDS` array. For a new dataset or a fresh launcher run, update those lists first or pass the generated manifest paths directly to the lower-level `.sbatch` jobs.
+
+### 1. Plan launcher experiments
+
+This job expands the YAML matrix into one predictive-training experiment per row and writes:
+
+- `launcher_experiments.jsonl`
+- `launcher_partitions.jsonl`
+- `planning_summary.json`
+
+Submit:
+
+```bash
+sbatch scripts/plan_launcher_experiments.sbatch configs/job_launcher.yml
+```
+
+Optional second argument:
+
+```bash
+sbatch scripts/plan_launcher_experiments.sbatch \
+  configs/job_launcher.yml \
+  job_launcher/plans/my_launch_plan
+```
+
+Notes:
+
+- This is planning only. It does not train models and does not submit explain/eval jobs.
+- The script validates the launcher config before writing the manifests.
+- There is no overwrite flag here; rerunning with the same `OUTPUT_DIR` will rewrite the manifest files in that directory.
+
+### 2. Submit predictive training as a Slurm array
+
+After planning, submit one array task per row in `launcher_experiments.jsonl`:
+
+```bash
+sbatch --array=0-11 \
+  scripts/train_predictive_array.sbatch \
+  job_launcher/plans/<plan-dir>/launcher_experiments.jsonl
+```
+
+Optional second argument:
+
+```bash
+sbatch --array=0-11 \
+  scripts/train_predictive_array.sbatch \
+  job_launcher/plans/<plan-dir>/launcher_experiments.jsonl \
+  job_launcher/plans/<plan-dir>/training_results
+```
+
+Important flags and environment variables:
+
+- `FORCE_TRAINING=1`: forces predictive retraining and passes `force=True` into the training orchestration. Without this, completed matching runs are reused when possible.
+- `RAY_NUM_CPUS=...`: overrides the training config resource value used by Flower/Ray.
+- `CLIENT_NUM_CPUS=...`: overrides per-client simulation CPU allocation.
+
+Example:
+
+```bash
+FORCE_TRAINING=1 RAY_NUM_CPUS=8 CLIENT_NUM_CPUS=1 \
+sbatch --array=0-11 \
+  scripts/train_predictive_array.sbatch \
+  job_launcher/plans/<plan-dir>/launcher_experiments.jsonl
+```
+
+Notes:
+
+- This job runs both data preparation and predictive federated training for each manifest row.
+- If you provide a deterministic `run_id_template` in the launcher config, that planned run id is used during training.
+- If `FORCE_TRAINING` is not set, reruns prefer reuse over overwrite.
+
+### 3. Plan explain/eval jobs from completed predictive runs
+
+Once the predictive training array has completed, generate one explain/eval JSONL plan and one Slurm array script per finished predictive run:
+
+```bash
+sbatch scripts/plan_explain_eval_from_training.sbatch \
+  configs/job_launcher.yml \
+  job_launcher/plans/<plan-dir>/launcher_experiments.jsonl
+```
+
+Optional environment variable:
+
+- `SUBMIT_SLURM=1`: immediately submits the generated `job_launcher/slurm/explain_eval__*.sbatch` scripts after writing them.
+
+Example:
+
+```bash
+SUBMIT_SLURM=1 \
+sbatch scripts/plan_explain_eval_from_training.sbatch \
+  configs/job_launcher.yml \
+  job_launcher/plans/<plan-dir>/launcher_experiments.jsonl
+```
+
+Notes:
+
+- Without `SUBMIT_SLURM=1`, this stage only writes the explain/eval plans and `.sbatch` files.
+- The script expects one `training_result_*.json` per planned experiment row.
+
+### 4. Submit explain/eval Slurm jobs
+
+If you did not use `SUBMIT_SLURM=1` in the previous step, submit the generated explain/eval arrays with:
+
+```bash
+bash ./scripts/submit_explain_eval_slurm.sh
+```
+
+Notes:
+
+- This script is intentionally minimal. It only loops over `job_launcher/slurm/explain_eval*.sbatch` and calls `sbatch` on each file.
+- It does not create the Slurm scripts. Run the post-training planning stage first.
+- It has no overwrite flag. Existing shard outputs are skipped or replaced according to the explain/eval plan settings and downstream CLI flags, not by this wrapper itself.
+
+### 5. Aggregate explain/eval shard outputs
+
+After all explain/eval array jobs have finished, aggregate the shard-level outputs:
+
+```bash
+bash ./scripts/submit_aggregate_explain_eval.sh
+```
+
+Optional selection override:
+
+```bash
+bash ./scripts/submit_aggregate_explain_eval.sh test__max-40__seed-42
+```
+
+Important flags and environment variables:
+
+- `ALLOW_PARTIAL=1`: passes `--allow-partial` to `aggregate-explain-eval` and aggregates completed shards even if some shard artifacts are missing or incomplete.
+- `EXPLAINERS=shap,lime`: restricts aggregation to specific explainers.
+- `CONFIGS=<config-id-1>,<config-id-2>`: restricts aggregation to specific config ids.
+
+Example:
+
+```bash
+ALLOW_PARTIAL=1 EXPLAINERS=lime \
+bash ./scripts/submit_aggregate_explain_eval.sh test__max-40__seed-42
+```
+
+Notes:
+
+- `scripts/submit_aggregate_explain_eval.sh` currently uses a hardcoded `RUN_IDS` list.
+- The lower-level `scripts/aggregate_explain_eval.sbatch` works for a single run id and discovers all explainer/config pairs automatically from the shard outputs.
+
+### 6. Prepare recommender context
+
+Once aggregation exists, build the per-client recommender context artifacts:
+
+```bash
+bash ./scripts/prepare_recommender_context.sh test__max-40__seed-42
+```
+
+Important flags and environment variables:
+
+- `EXPLAINERS=all`
+- `CONFIGS=all`
+- `CLIENTS=all`
+- `RUN_ID_FILE=...`: where the wrapper writes the run-id list used by the Slurm array
+
+Example:
+
+```bash
+EXPLAINERS=lime CLIENTS=client_000,client_001 \
+bash ./scripts/prepare_recommender_context.sh test__max-40__seed-42
+```
+
+Notes:
+
+- This wrapper submits `scripts/prepare_recommender_context.sbatch` as an array job.
+- It does not run aggregation. Aggregated explain/eval artifacts must already exist.
+- `scripts/prepare_recommender_context.sh` also uses a hardcoded `RUN_IDS` list.
+
+### 7. Submit recommender training and evaluation
+
+After the recommender contexts are ready, submit the recommender pipeline:
+
+```bash
+bash ./scripts/submit_pipeline.sh
+```
+
+Default behavior:
+
+- submits both `plain` and `secure` recommender runs for every configured `RUN_ID`
+- uses `SELECTION_ID=test__max-40__seed-42` unless overridden
+- uses `PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled`
+- labels data before training unless you explicitly skip labeling
+
+Important flags and environment variables:
+
+- `SELECTION_ID=...`: must match the prepared context selection
+- `SKIP_LABELING=1`: reuses existing labels and skips the labeling stage
+- `PERSONA_ASSIGNMENT_POLICY=fixed` and `FIXED_PERSONA=lay`: use one bundled fixed persona instead of `dirichlet_sampled`
+- `LABEL_NAMESPACE=...`: controls the output namespace used by label/train/eval
+- `TRAIN_ROUNDS`, `TRAIN_EPOCHS`, `TRAIN_BATCH_SIZE`, `TRAIN_LEARNING_RATE`
+- `TRAIN_SVM_C`, `TRAIN_SVM_INTERCEPT_SCALING`
+- `TOP_K=1,3,5,8`
+
+Clustered mode:
+
+```bash
+bash ./scripts/submit_pipeline.sh clustered 3 15 1 1,3,5,8 0
+```
+
+The positional arguments in clustered mode are:
+
+1. `clustered`
+2. `CLUSTERING_K`
+3. `CLUSTERING_WARMUP_ROUNDS`
+4. `CLUSTERING_FREEZE_PCA_AFTER_WARMUP`
+5. `TOP_K`
+6. `CLUSTERING_ENABLE_PCA`
+
+Notes:
+
+- `scripts/submit_pipeline.sh` also uses a hardcoded `RUN_IDS` list.
+- The submitted `scripts/recommender_pipeline.sbatch` sets `FORCE_TRAINING=1` internally for recommender training, so recommender model outputs are overwritten on rerun unless you change that script.
+- `SKIP_LABELING=1` is useful when labels already exist and you only want to retrain or reevaluate the recommender.
+
+### End-to-end order
+
+For a new launcher run, the expected order is:
+
+1. `plan_launcher_experiments.sbatch`
+2. `train_predictive_array.sbatch`
+3. `plan_explain_eval_from_training.sbatch`
+4. `submit_explain_eval_slurm.sh` if you did not use `SUBMIT_SLURM=1`
+5. `submit_aggregate_explain_eval.sh`
+6. `prepare_recommender_context.sh`
+7. `submit_pipeline.sh`
