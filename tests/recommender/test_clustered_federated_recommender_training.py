@@ -9,7 +9,10 @@ import pandas as pd
 import pytest
 
 from fed_perso_xai.fl.client import normalize_clustering_vector
-from fed_perso_xai.fl.recommender_simulation import _align_cluster_labels_to_previous_round
+from fed_perso_xai.fl.recommender_simulation import (
+    _align_cluster_labels_to_previous_round,
+    _apply_assignment_hysteresis,
+)
 from fed_perso_xai.orchestration.recommender_training import train_federated_recommender
 from fed_perso_xai.recommender.clustering import (
     ClientSideRandomProjector,
@@ -286,6 +289,38 @@ def test_normalize_clustering_vector_can_use_base_vector_norm() -> None:
     assert np.allclose(normalized, np.asarray([0.3, 0.4], dtype=np.float64))
 
 
+def test_apply_assignment_hysteresis_keeps_previous_cluster_without_clear_margin() -> None:
+    adjusted_assignments, retained_count = _apply_assignment_hysteresis(
+        previous_assignments={"client_000": 0, "client_001": 1},
+        proposed_assignments={"client_000": 1, "client_001": 1},
+        aligned_distance_matrix=np.asarray(
+            [
+                [1.0, 0.97],
+                [2.0, 1.0],
+            ],
+            dtype=np.float64,
+        ),
+        ordered_client_ids=("client_000", "client_001"),
+        assignment_margin=0.05,
+    )
+
+    assert adjusted_assignments == {"client_000": 0, "client_001": 1}
+    assert retained_count == 1
+
+
+def test_apply_assignment_hysteresis_allows_switch_when_new_cluster_is_meaningfully_closer() -> None:
+    adjusted_assignments, retained_count = _apply_assignment_hysteresis(
+        previous_assignments={"client_000": 0},
+        proposed_assignments={"client_000": 1},
+        aligned_distance_matrix=np.asarray([[1.0, 0.7]], dtype=np.float64),
+        ordered_client_ids=("client_000",),
+        assignment_margin=0.05,
+    )
+
+    assert adjusted_assignments == {"client_000": 1}
+    assert retained_count == 0
+
+
 def test_secure_kmeans_clusterer_selects_best_restart(monkeypatch: pytest.MonkeyPatch) -> None:
     import fed_perso_xai.recommender.clustering as clustering_module
 
@@ -556,6 +591,7 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert manifest["normalize_clustering_vector"] is True
     assert manifest["clustering_normalization_mode"] == "l2"
     assert manifest["delta_over_base_norm"] is True
+    assert np.isclose(manifest["assignment_margin"], 0.05)
     assert manifest["num_restarts"] == 5
     assert set(manifest["final_cluster_model_checkpoint_paths"]) == {"0", "1", "2"}
 
@@ -577,8 +613,11 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert round_one["projection"]["normalize_clustering_vector"] is True
     assert round_one["projection"]["clustering_normalization_mode"] == "l2"
     assert round_one["projection"]["delta_over_base_norm"] is True
+    assert np.isclose(round_one["projection"]["assignment_margin"], 0.05)
     assert round_one["secure_clustering"]["server_observes_raw_weights"] is False
     assert round_one["secure_clustering"]["server_observes_reduced_vectors"] is False
+    assert np.isclose(round_one["secure_clustering"]["assignment_margin"], 0.05)
+    assert round_one["secure_clustering"]["hysteresis_retained_client_count"] == 0
     assert round_one["secure_aggregation_per_cluster"]["0"]["mode"] == "secure"
     assert round_one["secure_aggregation_per_cluster"]["0"]["num_contributors"] == 2
     assert round_one["secure_aggregation_per_cluster"]["1"]["mode"] == "carry_forward_underpopulated_cluster"
@@ -795,6 +834,7 @@ def test_recommender_clustering_config_defaults_and_validation() -> None:
     assert config.normalize_clustering_vector is True
     assert config.clustering_normalization_mode == "l2"
     assert config.delta_over_base_norm is True
+    assert np.isclose(config.assignment_margin, 0.05)
     assert config.num_restarts == 5
     assert config.enable_pca is True
     assert config.pca_components == 8
@@ -803,3 +843,5 @@ def test_recommender_clustering_config_defaults_and_validation() -> None:
         RecommenderClusteringConfig(enabled=True, method="missing")
     with pytest.raises(ValueError, match="Unsupported clustering.normalization_mode"):
         RecommenderClusteringConfig(enabled=True, clustering_normalization_mode="invalid")
+    with pytest.raises(ValueError, match="assignment_margin must be less than 1"):
+        RecommenderClusteringConfig(enabled=True, assignment_margin=1.0)

@@ -135,6 +135,75 @@ def _count_assignment_changes(
     return int(changed), int(len(shared_clients))
 
 
+def _align_distance_matrix_to_stable_labels(
+    *,
+    distance_matrix: np.ndarray,
+    label_alignment: Mapping[int, int],
+    cluster_count: int,
+) -> np.ndarray:
+    """Reorder raw cluster-distance columns into stable cluster-id order."""
+
+    raw = np.asarray(distance_matrix, dtype=np.float64)
+    if raw.ndim != 2:
+        raise ValueError("distance_matrix must be a 2D array.")
+    if raw.shape[1] != int(cluster_count):
+        raise ValueError(f"Expected {cluster_count} distance columns, got {raw.shape[1]}.")
+    aligned = np.empty_like(raw, dtype=np.float64)
+    for raw_cluster_id in range(int(cluster_count)):
+        stable_cluster_id = int(label_alignment.get(raw_cluster_id, raw_cluster_id))
+        aligned[:, stable_cluster_id] = raw[:, raw_cluster_id]
+    return aligned
+
+
+def _apply_assignment_hysteresis(
+    *,
+    previous_assignments: Mapping[str, int],
+    proposed_assignments: Mapping[str, int],
+    aligned_distance_matrix: np.ndarray,
+    ordered_client_ids: Sequence[str],
+    assignment_margin: float,
+) -> tuple[dict[str, int], int]:
+    """Keep previous cluster ids unless the new cluster is meaningfully closer."""
+
+    margin = float(assignment_margin)
+    if margin <= 0.0:
+        return {client_id: int(cluster_id) for client_id, cluster_id in proposed_assignments.items()}, 0
+
+    distances = np.asarray(aligned_distance_matrix, dtype=np.float64)
+    if distances.ndim != 2:
+        raise ValueError("aligned_distance_matrix must be a 2D array.")
+    if distances.shape[0] != len(ordered_client_ids):
+        raise ValueError(
+            "aligned_distance_matrix row count must match the number of ordered client ids."
+        )
+
+    adjusted_assignments: dict[str, int] = {}
+    retained_count = 0
+    cluster_count = int(distances.shape[1])
+    for row_index, client_id in enumerate(ordered_client_ids):
+        proposed_cluster_id = int(proposed_assignments[client_id])
+        previous_cluster_id = previous_assignments.get(client_id)
+        if previous_cluster_id is None:
+            adjusted_assignments[client_id] = proposed_cluster_id
+            continue
+        previous_cluster_id = int(previous_cluster_id)
+        if (
+            previous_cluster_id == proposed_cluster_id
+            or previous_cluster_id < 0
+            or previous_cluster_id >= cluster_count
+        ):
+            adjusted_assignments[client_id] = proposed_cluster_id
+            continue
+        old_distance = float(distances[row_index, previous_cluster_id])
+        new_distance = float(distances[row_index, proposed_cluster_id])
+        if new_distance < old_distance * (1.0 - margin):
+            adjusted_assignments[client_id] = proposed_cluster_id
+            continue
+        adjusted_assignments[client_id] = previous_cluster_id
+        retained_count += 1
+    return adjusted_assignments, int(retained_count)
+
+
 def run_federated_recommender_training(
     *,
     client_datasets: list[RecommenderClientData],
@@ -618,9 +687,24 @@ def _run_clustered_recommender_training(
             current_assignments=raw_assignments,
             cluster_count=clustering_config.k,
         )
-        assignments = {
+        raw_aligned_assignments = {
             client_id: int(label_alignment[cluster_id]) for client_id, cluster_id in raw_assignments.items()
         }
+        hysteresis_retained_client_count = 0
+        assignments = dict(raw_aligned_assignments)
+        if assignments_result.distance_matrix is not None:
+            aligned_distance_matrix = _align_distance_matrix_to_stable_labels(
+                distance_matrix=assignments_result.distance_matrix,
+                label_alignment=label_alignment,
+                cluster_count=clustering_config.k,
+            )
+            assignments, hysteresis_retained_client_count = _apply_assignment_hysteresis(
+                previous_assignments=previous_assignments,
+                proposed_assignments=raw_aligned_assignments,
+                aligned_distance_matrix=aligned_distance_matrix,
+                ordered_client_ids=ordered_client_names,
+                assignment_margin=float(clustering_config.assignment_margin),
+            )
         cluster_sizes = summarize_cluster_sizes(assignments, clustering_config.k)
         changed_clients, compared_clients = _count_assignment_changes(
             previous_assignments=previous_assignments,
@@ -680,6 +764,7 @@ def _run_clustered_recommender_training(
                     "normalize_clustering_vector": bool(clustering_config.normalize_clustering_vector),
                     "clustering_normalization_mode": str(clustering_config.clustering_normalization_mode),
                     "delta_over_base_norm": bool(clustering_config.delta_over_base_norm),
+                    "assignment_margin": float(clustering_config.assignment_margin),
                     "num_restarts": int(clustering_config.num_restarts),
                     "projection_generation_mode": projection_generation_mode,
                     "server_observes_raw_weights_during_projection_fit": projection_server_observes_raw_weights,
@@ -695,6 +780,8 @@ def _run_clustered_recommender_training(
                         for cluster_id, aligned_cluster_id in label_alignment.items()
                     },
                     "label_alignment_overlap_count": int(label_alignment_overlap),
+                    "assignment_margin": float(clustering_config.assignment_margin),
+                    "hysteresis_retained_client_count": int(hysteresis_retained_client_count),
                     "initial_centroid_indices": [
                         int(value) for value in assignments_result.initial_centroid_indices
                     ],
@@ -751,6 +838,7 @@ def _run_clustered_recommender_training(
         "normalize_clustering_vector": bool(clustering_config.normalize_clustering_vector),
         "clustering_normalization_mode": str(clustering_config.clustering_normalization_mode),
         "delta_over_base_norm": bool(clustering_config.delta_over_base_norm),
+        "assignment_margin": float(clustering_config.assignment_margin),
         "num_restarts": int(clustering_config.num_restarts),
         "warmup_rounds": warmup_rounds,
         "freeze_pca_after_warmup": freeze_pca_after_warmup,

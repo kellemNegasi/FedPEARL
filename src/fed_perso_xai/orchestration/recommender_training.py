@@ -648,6 +648,7 @@ def _persist_clustered_training_artifacts(
         "normalize_clustering_vector": bool(config.clustering.normalize_clustering_vector),
         "clustering_normalization_mode": str(config.clustering.clustering_normalization_mode),
         "delta_over_base_norm": bool(config.clustering.delta_over_base_norm),
+        "assignment_margin": float(config.clustering.assignment_margin),
         "k": int(config.clustering.k),
         "num_restarts": int(config.clustering.num_restarts),
         "enable_pca": bool(config.clustering.enable_pca),

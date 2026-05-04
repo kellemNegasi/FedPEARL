@@ -55,6 +55,7 @@ Environment variables:
   CLUSTERING_NORMALIZE_VECTOR=1         Pass --no-clustering-normalize-vector when set to 0.
   CLUSTERING_NORMALIZATION_MODE=l2      Client-side clustering vector normalization mode.
   CLUSTERING_DELTA_OVER_BASE_NORM=1     When clustering deltas, normalize by the starting model norm.
+  CLUSTERING_ASSIGNMENT_MARGIN=0.05     Require a new cluster to be this much closer before switching.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
   CLUSTERING_NUM_RESTARTS=5             Number of K-means restarts per clustered round.
   CLUSTERING_ENABLE_PCA=1              Pass --no-clustering-enable-pca when set to 0.
@@ -141,6 +142,7 @@ CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
 CLUSTERING_NORMALIZE_VECTOR="${CLUSTERING_NORMALIZE_VECTOR:-1}"
 CLUSTERING_NORMALIZATION_MODE="${CLUSTERING_NORMALIZATION_MODE:-l2}"
 CLUSTERING_DELTA_OVER_BASE_NORM="${CLUSTERING_DELTA_OVER_BASE_NORM:-1}"
+CLUSTERING_ASSIGNMENT_MARGIN="${CLUSTERING_ASSIGNMENT_MARGIN:-0.05}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
 CLUSTERING_NUM_RESTARTS="${CLUSTERING_NUM_RESTARTS:-5}"
 CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA:-1}"
@@ -182,6 +184,10 @@ if [[ ! "$CLUSTERING_NORMALIZATION_MODE" =~ ^(l2)$ ]]; then
 fi
 if [[ ! "$CLUSTERING_DELTA_OVER_BASE_NORM" =~ ^(0|1)$ ]]; then
   echo "ERROR: CLUSTERING_DELTA_OVER_BASE_NORM must be 0 or 1." >&2
+  exit 2
+fi
+if ! [[ "$CLUSTERING_ASSIGNMENT_MARGIN" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($CLUSTERING_ASSIGNMENT_MARGIN >= 0 && $CLUSTERING_ASSIGNMENT_MARGIN < 1)}")" != "1" ]]; then
+  echo "ERROR: CLUSTERING_ASSIGNMENT_MARGIN must be a number in [0, 1)." >&2
   exit 2
 fi
 if [[ ! "$CLUSTERING_NUM_RESTARTS" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_NUM_RESTARTS" -lt 1 ]]; then
@@ -233,6 +239,7 @@ if [[ "$CLUSTERING_DELTA_OVER_BASE_NORM" == "0" ]]; then
 else
   TRAIN_EXTRA+=(--clustering-delta-over-base-norm)
 fi
+TRAIN_EXTRA+=(--clustering-assignment-margin "$CLUSTERING_ASSIGNMENT_MARGIN")
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
 TRAIN_EXTRA+=(--clustering-num-restarts "$CLUSTERING_NUM_RESTARTS")
 if [[ "$CLUSTERING_ENABLE_PCA" == "0" ]]; then

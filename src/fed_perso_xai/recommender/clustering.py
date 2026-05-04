@@ -142,6 +142,7 @@ class SecureClusterAssignments:
     iterations: int
     initial_centroid_indices: tuple[int, ...]
     secure_metadata: dict[str, Any]
+    distance_matrix: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,7 @@ class _SingleRestartClusterResult:
     initial_centroid_indices: tuple[int, ...]
     helper_ids: tuple[int, ...]
     helper_evaluation_points: tuple[int, ...]
+    distance_matrix: np.ndarray
     objective: float
     restart_index: int
     restart_seed: int
@@ -441,6 +443,7 @@ class SecureKMeansClusterer:
             iterations=int(best_result.iterations),
             initial_centroid_indices=best_result.initial_centroid_indices,
             secure_metadata=secure_metadata,
+            distance_matrix=best_result.distance_matrix,
         )
 
     def _run_single_restart(
@@ -502,6 +505,7 @@ class SecureKMeansClusterer:
             initial_centroid_indices=initial_centroid_indices,
             helper_ids=helper_ids or last_distance_helper_ids,
             helper_evaluation_points=evaluation_points or last_distance_evaluation_points,
+            distance_matrix=distance_matrix.astype(np.float64, copy=True),
             objective=float(objective),
             restart_index=int(restart_index),
             restart_seed=int(restart_seed),

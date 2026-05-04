@@ -405,6 +405,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="When clustering on deltas, normalize by the starting model norm instead of the delta norm.",
     )
+    recommender_train_parser.add_argument(
+        "--clustering-assignment-margin",
+        type=float,
+        default=0.05,
+        help="Require a new cluster to be this much closer before switching a client away from its previous cluster.",
+    )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
     recommender_train_parser.add_argument("--clustering-num-restarts", type=int, default=5)
     recommender_train_parser.add_argument(
@@ -837,6 +843,7 @@ def main() -> None:
                     normalize_clustering_vector=bool(args.clustering_normalize_vector),
                     clustering_normalization_mode=args.clustering_normalization_mode,
                     delta_over_base_norm=bool(args.clustering_delta_over_base_norm),
+                    assignment_margin=args.clustering_assignment_margin,
                     k=args.clustering_k,
                     num_restarts=args.clustering_num_restarts,
                     enable_pca=bool(args.clustering_enable_pca),

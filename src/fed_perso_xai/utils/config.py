@@ -424,6 +424,7 @@ class RecommenderClusteringConfig:
     normalize_clustering_vector: bool = True
     clustering_normalization_mode: str = "l2"
     delta_over_base_norm: bool = True
+    assignment_margin: float = 0.05
     k: int = 3
     num_restarts: int = 5
     enable_pca: bool = True
@@ -443,6 +444,9 @@ class RecommenderClusteringConfig:
         _normalize_recommender_clustering_normalization_mode(self.clustering_normalization_mode)
         if not isinstance(self.delta_over_base_norm, bool):
             raise TypeError("delta_over_base_norm must be a boolean.")
+        _require_non_negative("assignment_margin", self.assignment_margin)
+        if float(self.assignment_margin) >= 1.0:
+            raise ValueError("assignment_margin must be less than 1.")
         _require_integer_at_least("k", self.k, minimum=1)
         _require_integer_at_least("num_restarts", self.num_restarts, minimum=1)
         if not isinstance(self.enable_pca, bool):
