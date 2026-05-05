@@ -522,22 +522,27 @@ def test_train_federated_recommender_skips_final_evaluation_when_no_test_pairs_e
             encoding="utf-8",
         )
 
-    with pytest.raises(FileNotFoundError, match="No labeled recommender inputs were found"):
-        train_federated_recommender(
-            RecommenderFederatedTrainingConfig(
-                run_id=run_id,
-                selection_id=selection,
-                persona=persona,
-                paths=paths,
-                rounds=2,
-                epochs=5,
-                batch_size=2,
-                learning_rate=0.2,
-                simulation_backend="debug-sequential",
-                min_available_clients=2,
-                top_k=(1, 2),
-            )
+    artifacts, metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            paths=paths,
+            rounds=2,
+            epochs=5,
+            batch_size=2,
+            learning_rate=0.2,
+            simulation_backend="debug-sequential",
+            min_available_clients=2,
+            top_k=(1, 2),
         )
+    )
+
+    evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
+    assert metadata["status"] == "completed"
+    assert evaluation["status"] == "skipped_no_test_pairs"
+    assert evaluation["aggregate"] == {}
+    assert evaluation["clients"] == []
 
 
 @pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")
