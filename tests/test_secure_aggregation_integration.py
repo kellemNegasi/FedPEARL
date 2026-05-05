@@ -8,7 +8,9 @@ import pytest
 from fed_perso_xai.fl.client import (
     SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
     SecureAggregationClientSpec,
+    _build_client_secure_encoder,
     _clip_weighted_secure_payload,
+    _encode_secure_payload_or_raise,
     apply_shared_parameter_payload,
     extract_shared_parameter_payload,
 )
@@ -20,6 +22,10 @@ from fed_perso_xai.fl.strategy import (
 )
 from fed_perso_xai.models import load_global_model
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
+from fed_perso_xai.recommender.clustering import (
+    SecureClusterModelAggregator,
+    weighted_average_parameter_sets,
+)
 from fed_perso_xai.orchestration.training import train_federated_from_prepared
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
@@ -27,6 +33,7 @@ from fed_perso_xai.utils.config import (
     FederatedTrainingConfig,
     LogisticRegressionConfig,
     PartitionConfig,
+    RecommenderFederatedTrainingConfig,
 )
 
 FLOWER_AVAILABLE = importlib.util.find_spec("flwr") is not None
@@ -249,6 +256,72 @@ def test_weighted_secure_payload_clipping_reports_raw_and_clipped_values() -> No
     assert summary.total_component_count == 3
     assert summary.total_clipping_l1 == pytest.approx(4.0)
     assert summary.max_clipping_delta_abs == pytest.approx(3.5)
+
+
+def test_cluster_secure_aggregator_restores_weighted_average_from_global_normalization() -> None:
+    config = RecommenderFederatedTrainingConfig(
+        run_id="run",
+        selection_id="sel",
+        persona="persona",
+        secure_aggregation=True,
+        secure_num_helpers=5,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_field_modulus=3_037_000_493,
+        secure_quantization_scale=100_000,
+        secure_seed=17,
+    )
+    secure_spec = SecureAggregationClientSpec(
+        enabled=True,
+        num_helpers=5,
+        privacy_threshold=2,
+        reconstruction_threshold=3,
+        field_modulus=3_037_000_493,
+        quantization_scale=100_000,
+        seed=17,
+    )
+    encoder = _build_client_secure_encoder(secure_spec)
+    parameter_sets = {
+        "client_a": [np.array([0.25, 1.0]), np.array([0.5])],
+        "client_b": [np.array([1.25, -0.5]), np.array([1.0])],
+        "client_c": [np.array([-0.75, 0.25]), np.array([-0.5])],
+    }
+    weights = {"client_a": 4, "client_b": 3, "client_c": 5}
+    total_examples = float(sum(weights.values()))
+    encoded_updates = {}
+    payload_bounds = {}
+    for client_id, payload in parameter_sets.items():
+        encoded_update, weighted_payload_max_abs, _ = _encode_secure_payload_or_raise(
+            encoder=encoder,
+            secure_spec=secure_spec,
+            shared_parameters=payload,
+            client_id=client_id,
+            round_id=4,
+            num_examples=weights[client_id],
+            total_examples_normalizer=total_examples,
+        )
+        encoded_updates[client_id] = encoded_update
+        payload_bounds[client_id] = weighted_payload_max_abs
+
+    aggregator = SecureClusterModelAggregator(config)
+    result = aggregator.aggregate(
+        client_updates=encoded_updates,
+        client_weights=weights,
+        client_weighted_payload_bounds=payload_bounds,
+        assignments={client_id: 0 for client_id in parameter_sets},
+        round_id=4,
+        cluster_count=1,
+        fallback_parameters={0: parameter_sets["client_a"]},
+        total_examples_normalizer=total_examples,
+        min_contributors=1,
+    )[0]
+    expected = weighted_average_parameter_sets(
+        list(parameter_sets.values()),
+        list(weights.values()),
+    )
+
+    np.testing.assert_allclose(result.parameters[0], expected[0], atol=1e-5, rtol=0.0)
+    np.testing.assert_allclose(result.parameters[1], expected[1], atol=1e-5, rtol=0.0)
 
 
 @pytest.mark.skipif(

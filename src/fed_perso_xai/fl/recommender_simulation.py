@@ -14,6 +14,8 @@ from scipy.optimize import linear_sum_assignment
 from fed_perso_xai.fl.client import (
     FederatedPairwiseRecommenderClient,
     RecommenderClientData,
+    SECURE_TOTAL_EXAMPLES_FIXED_KEY,
+    SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY,
     SecurePayloadClippingSummary,
     build_secure_aggregation_client_spec,
 )
@@ -589,6 +591,11 @@ def _run_clustered_recommender_training(
         cluster_id: [np.asarray(parameter, dtype=np.float64).copy() for parameter in shared_global_parameters]
         for cluster_id in range(clustering_config.k)
     }
+    # Cluster membership is unknown before client encoding, so for the current
+    # full-participation clustered runtime we normalize each client update by
+    # the global round total first, then restore the usual per-cluster weighted
+    # average after secure reconstruction using `global_total / cluster_total`.
+    total_round_examples = int(sum(int(dataset.y_train.shape[0]) for dataset in client_datasets))
     round_history: list[dict[str, object]] = []
     clustered_rounds: list[ClusteredRoundResult] = []
 
@@ -652,7 +659,15 @@ def _run_clustered_recommender_training(
                 )
             client_update = clients_by_name[client_name].fit_clustered(
                 starting_parameters,
-                {"server_round": int(server_round)},
+                (
+                    {
+                        "server_round": int(server_round),
+                        SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY: float(total_round_examples),
+                        SECURE_TOTAL_EXAMPLES_FIXED_KEY: 1,
+                    }
+                    if int(server_round) == 1
+                    else {"server_round": int(server_round)}
+                ),
                 representation=clustering_config.representation,
                 normalize_vector=bool(clustering_config.normalize_clustering_vector),
                 normalization_mode=str(clustering_config.clustering_normalization_mode),
@@ -681,6 +696,7 @@ def _run_clustered_recommender_training(
                 round_id=server_round,
                 cluster_count=1,
                 fallback_parameters={0: shared_global_parameters},
+                total_examples_normalizer=float(total_round_examples),
                 min_contributors=1,
             )
             shared_global_parameters = [
@@ -801,6 +817,7 @@ def _run_clustered_recommender_training(
             round_id=server_round,
             cluster_count=clustering_config.k,
             fallback_parameters=current_cluster_models,
+            total_examples_normalizer=float(total_round_examples),
         )
         current_cluster_models = {
             cluster_id: [

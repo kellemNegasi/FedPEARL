@@ -613,6 +613,7 @@ class SecureClusterModelAggregator:
         round_id: int,
         cluster_count: int,
         fallback_parameters: Mapping[int, Sequence[np.ndarray]],
+        total_examples_normalizer: int | float | None = None,
         min_contributors: int = 2,
     ) -> dict[int, ClusterAggregationResult]:
         aggregator = _build_pre_encoded_secure_round_aggregator(self.training_config)
@@ -670,9 +671,14 @@ class SecureClusterModelAggregator:
                 [client_updates[client_id] for client_id in member_ids],
                 round_id=(int(round_id) * 10_000) + cluster_id,
             )
+            restoration_factor = (
+                float(total_examples_normalizer) / total_weight
+                if total_examples_normalizer is not None
+                else (1.0 / total_weight)
+            )
             results[cluster_id] = ClusterAggregationResult(
                 parameters=[
-                    np.asarray(parameter, dtype=np.float64).copy() / total_weight
+                    np.asarray(parameter, dtype=np.float64).copy() * restoration_factor
                     for parameter in secure_result.aggregated_tensors
                 ],
                 metadata={
@@ -702,6 +708,12 @@ class SecureClusterModelAggregator:
                     ),
                     "max_component_l1": float(max_component_l1),
                     "max_abs_error": float(secure_result.max_abs_error),
+                    "weight_normalization_total_examples": (
+                        None
+                        if total_examples_normalizer is None
+                        else float(total_examples_normalizer)
+                    ),
+                    "weight_restoration_factor": float(restoration_factor),
                 },
             )
         return results

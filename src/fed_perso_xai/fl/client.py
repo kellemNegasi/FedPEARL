@@ -866,11 +866,19 @@ if fl is not None:
             shared_payload, train_loss = self._train_shared_payload(parameters)
             round_id = int(config.get("server_round", 0))
             num_examples = int(self.data.y_train.shape[0])
+            total_examples_normalizer, cache_normalizer = resolve_secure_total_examples_normalizer(
+                config,
+                cached_value=self._secure_total_examples_normalizer,
+            )
+            if cache_normalizer:
+                self._secure_total_examples_normalizer = total_examples_normalizer
+            elif SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY in config:
+                self._secure_total_examples_normalizer = None
             encoded_update, weighted_payload_max_abs, clipping_summary = self._encode_shared_payload(
                 shared_payload.shared_parameters,
                 round_id=round_id,
                 num_examples=num_examples,
-                total_examples_normalizer=self._secure_total_examples_normalizer,
+                total_examples_normalizer=total_examples_normalizer,
             )
             self._last_clustering_vector = self._compute_clustering_vector(
                 shared_parameters=shared_payload.shared_parameters,
