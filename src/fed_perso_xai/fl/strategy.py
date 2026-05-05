@@ -24,6 +24,8 @@ from fed_perso_xai.fl.client import (
     SECURE_PAYLOAD_ENCODING_KEY,
     SECURE_PAYLOAD_ENCODING_VALUE,
     SECURE_PAYLOAD_LAYOUT_KEY,
+    SECURE_TOTAL_EXAMPLES_FIXED_KEY,
+    SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY,
     SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY,
     SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
     deserialize_secure_payload_clipping_summary,
@@ -42,6 +44,8 @@ class FederatedRunRecorder:
     backend: str
     round_history: list[dict[str, object]] = field(default_factory=list)
     final_parameters: list[np.ndarray] | None = None
+    client_example_counts: dict[str, int] = field(default_factory=dict)
+    total_client_examples: int = 0
 
 
 @dataclass(frozen=True)
@@ -246,6 +250,37 @@ def _validate_encoded_secure_aggregate_bound(
     return total_max_abs_bound
 
 
+def _resolve_secure_total_examples_normalizer(
+    results: Sequence[tuple[Any, Any]],
+) -> float | None:
+    normalizers: list[float] = []
+    for _, fit_res in results:
+        value = fit_res.metrics.get(SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY)
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)):
+            raise ValueError(
+                "Secure aggregation expected numeric secure_total_examples_normalizer values."
+            )
+        normalized_value = float(value)
+        if not np.isfinite(normalized_value) or normalized_value <= 0.0:
+            raise ValueError("secure_total_examples_normalizer must be a finite positive number.")
+        normalizers.append(normalized_value)
+    if not normalizers:
+        return None
+    reference = normalizers[0]
+    for value in normalizers[1:]:
+        if not np.isclose(value, reference, rtol=0.0, atol=0.0):
+            raise ValueError(
+                "Secure aggregation expected the same secure_total_examples_normalizer from all clients."
+            )
+    if len(normalizers) != len(results):
+        raise ValueError(
+            "Secure aggregation expected all secure clients in the round to report secure_total_examples_normalizer."
+        )
+    return reference
+
+
 def _build_secure_clipping_report(results: Sequence[tuple[Any, Any]]) -> dict[str, Any] | None:
     clipping_clients: list[dict[str, Any]] = []
     total_clients = 0
@@ -407,6 +442,93 @@ if fl is not None:
                 training_config.secure_field_modulus,
             )
 
+        def _resolve_client_example_count(self, client_identifier: str) -> int:
+            try:
+                value = self.recorder.client_example_counts[str(client_identifier)]
+            except KeyError as exc:
+                known = ", ".join(sorted(self.recorder.client_example_counts))
+                raise KeyError(
+                    f"Missing client example count for identifier {client_identifier!r}. "
+                    f"Known identifiers: {known}"
+                ) from exc
+            return int(value)
+
+        def _resolve_client_proxy_identifier(self, client_proxy: Any) -> str:
+            for attr_name in ("cid", "node_id"):
+                value = getattr(client_proxy, attr_name, None)
+                if value is None:
+                    continue
+                identifier = str(value)
+                if identifier in self.recorder.client_example_counts:
+                    return identifier
+            for attr_name in ("cid", "node_id"):
+                value = getattr(client_proxy, attr_name, None)
+                if value is not None:
+                    return str(value)
+            raise ValueError("Could not resolve identifiers for sampled Flower client proxy.")
+
+        def _build_fit_config_for_client_ids(
+            self,
+            server_round: int,
+            client_ids: Sequence[str] | None = None,
+        ) -> dict[str, Any]:
+            config = dict(self.on_fit_config_fn(server_round) if self.on_fit_config_fn is not None else {})
+            if not self.training_config.secure_aggregation:
+                return config
+
+            full_participation = (
+                float(self.training_config.fit_fraction) >= 1.0
+                and self.training_config.min_available_clients >= self.training_config.num_clients
+            ) or (float(self.training_config.fit_fraction) >= 1.0)
+            if full_participation:
+                total_examples = int(self.recorder.total_client_examples)
+                if total_examples <= 0:
+                    raise ValueError(
+                        "Secure normalization requires recorder.total_client_examples to be populated."
+                    )
+                if int(server_round) == 1:
+                    config[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples)
+                    config[SECURE_TOTAL_EXAMPLES_FIXED_KEY] = 1
+                return config
+
+            if client_ids is None:
+                raise ValueError(
+                    "Per-round secure normalization for sampled clients requires explicit client_ids."
+                )
+            total_examples = int(
+                sum(self._resolve_client_example_count(client_id) for client_id in client_ids)
+            )
+            if total_examples <= 0:
+                raise ValueError("Secure normalization requires a positive sampled-client example total.")
+            config[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples)
+            config[SECURE_TOTAL_EXAMPLES_FIXED_KEY] = 0
+            return config
+
+        def configure_fit(self, server_round, parameters, client_manager):  # type: ignore[override]
+            fit_plan = super().configure_fit(server_round, parameters, client_manager)
+            if not self.training_config.secure_aggregation:
+                return fit_plan
+
+            selected_client_ids = [
+                self._resolve_client_proxy_identifier(client_proxy)
+                for client_proxy, _ in fit_plan
+            ]
+            shared_config = self._build_fit_config_for_client_ids(
+                server_round,
+                client_ids=selected_client_ids,
+            )
+            rewritten_plan = []
+            for client_proxy, fit_ins in fit_plan:
+                merged_config = dict(fit_ins.config)
+                merged_config.update(shared_config)
+                rewritten_plan.append(
+                    (
+                        client_proxy,
+                        fl.common.FitIns(parameters=fit_ins.parameters, config=merged_config),
+                    )
+                )
+            return rewritten_plan
+
         def aggregate_fit(self, server_round, results, failures):  # type: ignore[override]
             if not results:
                 return None, {}
@@ -513,6 +635,7 @@ if fl is not None:
                 field_modulus=self.training_config.secure_field_modulus,
             )
             clipping_report = _build_secure_clipping_report(results)
+            total_examples_normalizer = _resolve_secure_total_examples_normalizer(results)
             secure_aggregator = self._secure_share_aggregator
             if secure_aggregator is None:
                 raise RuntimeError("Secure aggregation was requested but no aggregator is configured.")
@@ -524,8 +647,9 @@ if fl is not None:
                 encoded_updates,
                 round_id=server_round,
             )
+            scale_factor = 1.0 if total_examples_normalizer is not None else (1.0 / total_weight)
             aggregated = self._compose_updated_parameters(
-                _scale_parameter_set(secure_result.aggregated_tensors, 1.0 / total_weight)
+                _scale_parameter_set(secure_result.aggregated_tensors, scale_factor)
             )
             max_abs_error = (
                 float(secure_result.max_abs_error)
@@ -563,6 +687,7 @@ if fl is not None:
                 "requested_quantization_scale": self.training_config.secure_quantization_scale,
                 "max_component_l1": max_component_l1,
                 "max_abs_error": max_abs_error,
+                "weight_normalization_total_examples": total_examples_normalizer,
                 "clipping": clipping_report,
             }
 

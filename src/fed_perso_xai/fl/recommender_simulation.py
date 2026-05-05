@@ -395,6 +395,17 @@ def _run_flower_recommender_simulation(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    # TODO: For mathematical correctness we derive client example counts directly
+    # from the in-memory simulation datasets. Refactor this to collect counts from
+    # clients during an initial handshake/round so the secure-normalization flow
+    # matches a real federated deployment more closely.
+    recorder.client_example_counts = {
+        str(dataset.client_id): int(dataset.y_train.shape[0])
+        for dataset in client_datasets
+    }
+    recorder.total_client_examples = int(
+        sum(int(dataset.y_train.shape[0]) for dataset in client_datasets)
+    )
     secure_client_spec = build_secure_aggregation_client_spec(config)
     data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
 
@@ -448,6 +459,17 @@ def _run_debug_sequential_recommender_runtime(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    # TODO: For mathematical correctness we derive client example counts directly
+    # from the in-memory simulation datasets. Refactor this to collect counts from
+    # clients during an initial handshake/round so the secure-normalization flow
+    # matches a real federated deployment more closely.
+    recorder.client_example_counts = {
+        str(dataset.client_id): int(dataset.y_train.shape[0])
+        for dataset in client_datasets
+    }
+    recorder.total_client_examples = int(
+        sum(int(dataset.y_train.shape[0]) for dataset in client_datasets)
+    )
     strategy = strategy_factory.create(initial_parameters, recorder)
     secure_client_spec = build_secure_aggregation_client_spec(config)
     clients = [
@@ -470,11 +492,17 @@ def _run_debug_sequential_recommender_runtime(
             minimum=min(config.min_available_clients, len(clients)),
         )
         fit_indices = rng.choice(len(clients), size=fit_sample_size, replace=False)
+        fit_client_ids = [str(client_datasets[int(index)].client_id) for index in fit_indices]
+        fit_config = (
+            strategy._build_fit_config_for_client_ids(server_round, fit_client_ids)
+            if hasattr(strategy, "_build_fit_config_for_client_ids")
+            else {"server_round": int(server_round)}
+        )
         fit_results = []
         for client_index in fit_indices:
             updated_parameters, num_examples, metrics = clients[client_index].fit(
                 parameters,
-                {"server_round": int(server_round)},
+                dict(fit_config),
             )
             fit_results.append(
                 (

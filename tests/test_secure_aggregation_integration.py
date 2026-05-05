@@ -105,6 +105,46 @@ def test_secure_aggregator_matches_plain_shared_weighted_average() -> None:
     np.testing.assert_allclose(secure_average[1], plain_average[1], atol=1e-5, rtol=0.0)
 
 
+def test_secure_aggregator_matches_plain_average_with_server_normalized_weights() -> None:
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        secure_aggregation=True,
+        secure_num_helpers=5,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_quantization_scale=100_000,
+        secure_seed=17,
+    )
+    secure_aggregator = _build_secure_aggregator(config)
+    parameter_sets = [
+        [np.array([0.25, 1.0]), np.array([0.5])],
+        [np.array([1.25, -0.5]), np.array([1.0])],
+        [np.array([-0.75, 0.25]), np.array([-0.5])],
+    ]
+    weights = [4, 3, 5]
+    total_weight = float(sum(weights))
+
+    plain_average = _weighted_average_parameter_sets(parameter_sets, weights)
+    normalized_payloads = [
+        [array * (float(weight) / total_weight) for array in payload]
+        for payload, weight in zip(parameter_sets, weights, strict=True)
+    ]
+    secure_result = secure_aggregator.aggregate(normalized_payloads, round_id=10)
+
+    np.testing.assert_allclose(
+        secure_result.aggregated_tensors[0],
+        plain_average[0],
+        atol=1e-5,
+        rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        secure_result.aggregated_tensors[1],
+        plain_average[1],
+        atol=1e-5,
+        rtol=0.0,
+    )
+
+
 def test_secure_quantization_plan_reduces_scale_when_payloads_would_overflow() -> None:
     payloads = [
         [np.array([6.0, -1.0], dtype=np.float64), np.array([0.25], dtype=np.float64)],
@@ -271,6 +311,10 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
     assert plain_summary["round_history_summary"][0]["aggregation"]["mode"] == "plain"
     assert secure_summary["round_history_summary"][0]["aggregation"]["mode"] == "secure"
     assert secure_summary["round_history_summary"][0]["aggregation"]["helper_count"] == 5
+    assert (
+        secure_summary["round_history_summary"][0]["aggregation"]["weight_normalization_total_examples"]
+        > 0.0
+    )
 
     plain_parameters = load_global_model(plain_artifacts.run_dir).model.get_parameters()
     secure_parameters = load_global_model(secure_artifacts.run_dir).model.get_parameters()

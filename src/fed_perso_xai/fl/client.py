@@ -132,6 +132,8 @@ SECURE_PAYLOAD_ENCODING_KEY = "secure_payload_encoding"
 SECURE_PAYLOAD_ENCODING_VALUE = "lcc_helper_shares_v1"
 SECURE_PAYLOAD_LAYOUT_KEY = "secure_payload_layout"
 SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY = "secure_weighted_payload_max_abs"
+SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY = "secure_total_examples_normalizer"
+SECURE_TOTAL_EXAMPLES_FIXED_KEY = "secure_total_examples_fixed"
 SECURE_WEIGHTED_PAYLOAD_RAW_MAX_ABS_KEY = "secure_weighted_payload_raw_max_abs"
 SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY = "secure_weighted_payload_clip_summary"
 SECURE_WEIGHTED_PAYLOAD_CLIP_THRESHOLD_KEY = "secure_weighted_payload_clip_threshold_abs"
@@ -410,10 +412,23 @@ def _encode_secure_payload_or_raise(
     client_id: str,
     round_id: int,
     num_examples: int,
+    total_examples_normalizer: int | float | None = None,
 ) -> tuple[Any, float, SecurePayloadClippingSummary]:
+    effective_weight = float(num_examples)
+    if total_examples_normalizer is not None:
+        # Normalize the FedAvg weight with the server-provided total example count
+        # before secure encoding. This preserves the weighted-average math while
+        # shrinking the encoded magnitude from `num_examples * update` to
+        # `(num_examples / total_examples) * update`, which helps prevent finite-field
+        # overflow during quantization and secure aggregation. The client therefore
+        # depends on the server sending the total-example normalizer in the fit config.
+        normalizer = float(total_examples_normalizer)
+        if not np.isfinite(normalizer) or normalizer <= 0.0:
+            raise ValueError("total_examples_normalizer must be a finite positive number.")
+        effective_weight = float(num_examples) / normalizer
     weighted_parameters, clipping_summary = _clip_weighted_secure_payload(
         parameters=shared_parameters,
-        weight=int(num_examples),
+        weight=effective_weight,
         secure_spec=secure_spec,
     )
     try:
@@ -430,6 +445,7 @@ def _encode_secure_payload_or_raise(
         raise ValueError(
             "Secure aggregation quantization overflow for client-side encoded payload: "
             f"client_id={client_id}, round_id={int(round_id)}, num_examples={int(num_examples)}, "
+            f"total_examples_normalizer={total_examples_normalizer}, "
             f"weighted_payload_raw_max_abs={clipping_summary.raw_weighted_payload_max_abs:.6g}, "
             f"weighted_payload_effective_max_abs={clipping_summary.effective_weighted_payload_max_abs:.6g}, "
             f"clip_threshold_abs={clipping_summary.clip_threshold_abs}, "
@@ -498,6 +514,26 @@ def build_secure_payload_clipping_metrics(
     }
 
 
+def resolve_secure_total_examples_normalizer(
+    config: dict[str, Any],
+    *,
+    cached_value: float | None,
+) -> tuple[float | None, bool]:
+    """Resolve the server-provided secure total-example normalizer for one round."""
+
+    configured_value = config.get(SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY)
+    if configured_value is None:
+        return cached_value, False
+    if not isinstance(configured_value, (int, float)):
+        raise ValueError(
+            "secure_total_examples_normalizer must be numeric when provided by the server."
+        )
+    normalizer = float(configured_value)
+    if not np.isfinite(normalizer) or normalizer <= 0.0:
+        raise ValueError("secure_total_examples_normalizer must be a finite positive number.")
+    return normalizer, bool(int(config.get(SECURE_TOTAL_EXAMPLES_FIXED_KEY, 0)))
+
+
 def normalize_clustering_vector(
     vector: np.ndarray,
     *,
@@ -549,6 +585,7 @@ if fl is not None:
                 if self._secure_aggregation.enabled
                 else None
             )
+            self._secure_total_examples_normalizer: float | None = None
             self.model = create_model(
                 model_name,
                 n_features=data.X_train.shape[1],
@@ -587,6 +624,14 @@ if fl is not None:
             }
             if self._secure_encoder is not None:
                 round_id = int(config.get("server_round", 0))
+                total_examples_normalizer, cache_normalizer = resolve_secure_total_examples_normalizer(
+                    config,
+                    cached_value=self._secure_total_examples_normalizer,
+                )
+                if cache_normalizer:
+                    self._secure_total_examples_normalizer = total_examples_normalizer
+                elif SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY in config:
+                    self._secure_total_examples_normalizer = None
                 encoded_update, weighted_payload_max_abs, clipping_summary = _encode_secure_payload_or_raise(
                     encoder=self._secure_encoder,
                     secure_spec=self._secure_aggregation,
@@ -594,10 +639,13 @@ if fl is not None:
                     client_id=str(self.data.client_id),
                     round_id=round_id,
                     num_examples=int(self.data.y_train.shape[0]),
+                    total_examples_normalizer=total_examples_normalizer,
                 )
                 metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
                 metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
                 metrics[SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY] = float(weighted_payload_max_abs)
+                if total_examples_normalizer is not None:
+                    metrics[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples_normalizer)
                 metrics.update(build_secure_payload_clipping_metrics(clipping_summary))
                 return (
                     [
@@ -654,6 +702,7 @@ if fl is not None:
                 if self._secure_aggregation.enabled
                 else None
             )
+            self._secure_total_examples_normalizer: float | None = None
             self.model = create_recommender(
                 recommender_type=recommender_type,
                 n_features=data.X_train.shape[1],
@@ -686,6 +735,7 @@ if fl is not None:
             *,
             round_id: int,
             num_examples: int,
+            total_examples_normalizer: float | None = None,
         ) -> tuple[Any, float, SecurePayloadClippingSummary]:
             if self._secure_encoder is None:
                 raise RuntimeError(
@@ -698,6 +748,7 @@ if fl is not None:
                 client_id=self.data.client_name,
                 round_id=round_id,
                 num_examples=int(num_examples),
+                total_examples_normalizer=total_examples_normalizer,
             )
             return encoded_update, float(weighted_payload_max_abs), clipping_summary
 
@@ -761,14 +812,25 @@ if fl is not None:
             )
             if self._secure_encoder is not None:
                 round_id = int(config.get("server_round", 0))
+                total_examples_normalizer, cache_normalizer = resolve_secure_total_examples_normalizer(
+                    config,
+                    cached_value=self._secure_total_examples_normalizer,
+                )
+                if cache_normalizer:
+                    self._secure_total_examples_normalizer = total_examples_normalizer
+                elif SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY in config:
+                    self._secure_total_examples_normalizer = None
                 encoded_update, weighted_payload_max_abs, clipping_summary = self._encode_shared_payload(
                     shared_payload.shared_parameters,
                     round_id=round_id,
                     num_examples=int(self.data.y_train.shape[0]),
+                    total_examples_normalizer=total_examples_normalizer,
                 )
                 metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
                 metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
                 metrics[SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY] = float(weighted_payload_max_abs)
+                if total_examples_normalizer is not None:
+                    metrics[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples_normalizer)
                 metrics.update(build_secure_payload_clipping_metrics(clipping_summary))
                 return (
                     [
@@ -808,6 +870,7 @@ if fl is not None:
                 shared_payload.shared_parameters,
                 round_id=round_id,
                 num_examples=num_examples,
+                total_examples_normalizer=self._secure_total_examples_normalizer,
             )
             self._last_clustering_vector = self._compute_clustering_vector(
                 shared_parameters=shared_payload.shared_parameters,
