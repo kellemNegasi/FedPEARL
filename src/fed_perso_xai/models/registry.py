@@ -8,8 +8,9 @@ from typing import Any, Callable
 import numpy as np
 
 from fed_perso_xai.models.base import TabularClassifier
-from fed_perso_xai.models.logistic_regression import LogisticRegressionModel, initialize_parameters
-from fed_perso_xai.utils.config import LogisticRegressionConfig
+from fed_perso_xai.models.logistic_regression import LogisticRegressionModel, initialize_parameters as initialize_logistic_parameters
+from fed_perso_xai.models.mlp import MLPClassifierModel, initialize_parameters as initialize_mlp_parameters
+from fed_perso_xai.utils.config import LogisticRegressionConfig, MLPConfig
 
 
 ModelBuilder = Callable[[int, Any], TabularClassifier]
@@ -64,6 +65,20 @@ def _build_logistic_regression_model(
     )
 
 
+def _build_mlp_model(
+    n_features: int,
+    config: MLPConfig,
+) -> MLPClassifierModel:
+    return MLPClassifierModel(
+        n_features=n_features,
+        hidden_dim=config.hidden_dim,
+        learning_rate=config.learning_rate,
+        batch_size=config.batch_size,
+        local_epochs=config.epochs,
+        l2_regularization=config.l2_regularization,
+    )
+
+
 DEFAULT_MODEL_REGISTRY = ModelRegistry(
     specs=[
         ModelSpec(
@@ -71,8 +86,18 @@ DEFAULT_MODEL_REGISTRY = ModelRegistry(
             display_name="Logistic Regression",
             config_type=LogisticRegressionConfig,
             build_model=_build_logistic_regression_model,
-            initialize_parameters=lambda n_features, config: initialize_parameters(n_features),
-        )
+            initialize_parameters=lambda n_features, config: initialize_logistic_parameters(n_features),
+        ),
+        ModelSpec(
+            key="mlp_classifier",
+            display_name="MLP Classifier",
+            config_type=MLPConfig,
+            build_model=_build_mlp_model,
+            initialize_parameters=lambda n_features, config: initialize_mlp_parameters(
+                n_features,
+                config.hidden_dim,
+            ),
+        ),
     ]
 )
 

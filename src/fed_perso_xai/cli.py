@@ -52,6 +52,8 @@ from fed_perso_xai.utils.config import (
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
+    ModelConfig,
     PartitionConfig,
     RecommenderClusteringConfig,
     RecommenderFederatedTrainingConfig,
@@ -85,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     centralized_parser = subparsers.add_parser(
         "train-centralized",
-        help="Train the centralized logistic-regression baseline.",
+        help="Train the centralized predictive baseline.",
     )
     centralized_parser.add_argument("--dataset", required=True, choices=dataset_choices)
     centralized_parser.add_argument("--seed", type=int, default=42)
@@ -973,6 +975,12 @@ def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--l2-regularization", type=float, default=0.0)
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=64,
+        help="Hidden-layer width for `mlp_classifier`.",
+    )
 
 
 def _add_simulation_resource_args(parser: argparse.ArgumentParser) -> None:
@@ -1009,13 +1017,16 @@ def _build_artifact_paths_or_none(args: argparse.Namespace) -> ArtifactPaths | N
     return _build_artifact_paths(args)
 
 
-def _build_model_config(args: argparse.Namespace) -> LogisticRegressionConfig:
-    return LogisticRegressionConfig(
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        l2_regularization=args.l2_regularization,
-    )
+def _build_model_config(args: argparse.Namespace) -> ModelConfig:
+    common_kwargs = {
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'l2_regularization': args.l2_regularization,
+    }
+    if args.model == 'mlp_classifier':
+        return MLPConfig(hidden_dim=args.hidden_dim, **common_kwargs)
+    return LogisticRegressionConfig(**common_kwargs)
 
 
 def _build_shap_override_args(args: argparse.Namespace) -> dict[str, object]:

@@ -143,6 +143,27 @@ class LogisticRegressionConfig:
 
 
 @dataclass(frozen=True)
+class MLPConfig:
+    """Shared single-hidden-layer MLP hyperparameters."""
+
+    epochs: int = 5
+    batch_size: int = 64
+    learning_rate: float = 0.05
+    l2_regularization: float = 0.0
+    hidden_dim: int = 64
+
+    def __post_init__(self) -> None:
+        _require_integer_at_least("epochs", self.epochs, minimum=1)
+        _require_integer_at_least("batch_size", self.batch_size, minimum=1)
+        _require_positive("learning_rate", self.learning_rate)
+        _require_non_negative("l2_regularization", self.l2_regularization)
+        _require_integer_at_least("hidden_dim", self.hidden_dim, minimum=1)
+
+
+ModelConfig = LogisticRegressionConfig | MLPConfig
+
+
+@dataclass(frozen=True)
 class DataPreparationConfig:
     """Configuration for building the prepared-data artifacts."""
 
@@ -170,7 +191,7 @@ class ExperimentConfig:
     seed: int = 42
     model_name: str = "logistic_regression"
     paths: ArtifactPaths = field(default_factory=ArtifactPaths)
-    model: LogisticRegressionConfig = field(default_factory=LogisticRegressionConfig)
+    model: ModelConfig = field(default_factory=LogisticRegressionConfig)
 
     def __post_init__(self) -> None:
         _require_non_empty_string("dataset_name", self.dataset_name)

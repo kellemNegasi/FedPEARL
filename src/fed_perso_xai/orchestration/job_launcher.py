@@ -24,6 +24,8 @@ from fed_perso_xai.utils.config import (
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
+    ModelConfig,
     PartitionConfig,
     PreprocessingConfig,
 )
@@ -40,7 +42,7 @@ class LauncherExperiment:
     alpha: float
     model_label: str
     model_name: str
-    model_config: LogisticRegressionConfig
+    model_config: ModelConfig
     rounds: int
     strategy_name: str
     simulation_backend: str
@@ -359,7 +361,7 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
         model_name = str(raw_model.get("name", "logistic_regression"))
         params = raw_model.get("params") or {
             key: raw_model[key]
-            for key in ("epochs", "batch_size", "learning_rate", "l2_regularization")
+            for key in ("epochs", "batch_size", "learning_rate", "l2_regularization", "hidden_dim")
             if key in raw_model
         }
         param_grid = {
@@ -370,8 +372,9 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
                 float(value)
                 for value in _as_list(params.get("l2_regularization", 0.0))
             ],
+            "hidden_dim": [int(value) for value in _as_list(params.get("hidden_dim", 64))],
         }
-        for epochs, batch_size, learning_rate, l2_regularization in itertools.product(
+        for epochs, batch_size, learning_rate, l2_regularization, hidden_dim in itertools.product(
             _require_non_empty_list(f"model '{model_name}' params.epochs", param_grid["epochs"]),
             _require_non_empty_list(
                 f"model '{model_name}' params.batch_size",
@@ -385,16 +388,34 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
                 f"model '{model_name}' params.l2_regularization",
                 param_grid["l2_regularization"],
             ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.hidden_dim",
+                param_grid["hidden_dim"],
+            ),
         ):
-            config = LogisticRegressionConfig(
-                epochs=epochs,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
-                l2_regularization=l2_regularization,
-            )
-            label = raw_model.get("label") or (
-                f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-l2{l2_regularization}"
-            )
+            if model_name == 'mlp_classifier':
+                config = MLPConfig(
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    learning_rate=learning_rate,
+                    l2_regularization=l2_regularization,
+                    hidden_dim=hidden_dim,
+                )
+                default_label = (
+                    f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-"
+                    f"l2{l2_regularization}-hidden{hidden_dim}"
+                )
+            else:
+                config = LogisticRegressionConfig(
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    learning_rate=learning_rate,
+                    l2_regularization=l2_regularization,
+                )
+                default_label = (
+                    f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-l2{l2_regularization}"
+                )
+            label = raw_model.get("label") or default_label
             entries.append({"label": label, "name": model_name, "config": config})
     return entries
 

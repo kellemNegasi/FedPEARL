@@ -71,3 +71,25 @@ def test_custom_model_registry_entry_builds_and_initializes() -> None:
     assert model.get_parameters()[0].tolist() == [2.5, 2.5, 2.5]
     assert parameters[0].tolist() == [2.5, 2.5, 2.5]
     assert registry.list_keys() == ["dummy"]
+
+
+from fed_perso_xai.models.registry import DEFAULT_MODEL_REGISTRY
+from fed_perso_xai.utils.config import MLPConfig
+
+
+def test_default_registry_builds_mlp_classifier() -> None:
+    model = create_model(
+        "mlp_classifier",
+        n_features=4,
+        config=MLPConfig(epochs=2, batch_size=2, learning_rate=0.1, hidden_dim=8),
+        registry=DEFAULT_MODEL_REGISTRY,
+    )
+    parameters = initialize_model_parameters(
+        "mlp_classifier",
+        n_features=4,
+        config=MLPConfig(hidden_dim=8),
+        registry=DEFAULT_MODEL_REGISTRY,
+    )
+
+    assert len(model.get_parameters()) == 4
+    assert [parameter.shape for parameter in parameters] == [(4, 8), (8,), (8, 1), (1,)]
