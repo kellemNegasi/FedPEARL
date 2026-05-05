@@ -64,12 +64,12 @@ def _prepare_basic_recommender_run(tmp_path, *, client_count: int = 2):
         )
         labels = pd.DataFrame(
             {
-                "client_id": [f"client_{client_idx:03d}"] * 2,
-                "dataset_index": [0, 1],
-                "pair_1": ["a", "a"],
-                "pair_2": ["b", "b"],
-                "label": [0, 0],
-                "split": ["train", "test"],
+                "client_id": [f"client_{client_idx:03d}"] * 3,
+                "dataset_index": [0, 1, 1],
+                "pair_1": ["a", "a", "a"],
+                "pair_2": ["b", "b", "b"],
+                "label": [0, 0, 0],
+                "split": ["train", "validation", "test"],
             }
         )
         candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
@@ -79,6 +79,7 @@ def _prepare_basic_recommender_run(tmp_path, *, client_count: int = 2):
                 {
                     "instance_split": {
                         "train_dataset_indices": [0],
+                        "validation_dataset_indices": [1],
                         "test_dataset_indices": [1],
                     }
                 }
@@ -340,12 +341,12 @@ def test_train_federated_recommender_allows_clients_without_eval_pairs(tmp_path)
         if client_idx == 0:
             labels = pd.DataFrame(
                 {
-                    "client_id": [f"client_{client_idx:03d}"] * 2,
-                    "dataset_index": [0, 1],
-                    "pair_1": ["a", "a"],
-                    "pair_2": ["b", "b"],
-                    "label": [0, 0],
-                    "split": ["train", "test"],
+                    "client_id": [f"client_{client_idx:03d}"] * 3,
+                    "dataset_index": [0, 1, 1],
+                    "pair_1": ["a", "a", "a"],
+                    "pair_2": ["b", "b", "b"],
+                    "label": [0, 0, 0],
+                    "split": ["train", "validation", "test"],
                 }
             )
         else:
@@ -366,6 +367,7 @@ def test_train_federated_recommender_allows_clients_without_eval_pairs(tmp_path)
                 {
                     "instance_split": {
                         "train_dataset_indices": [0],
+                        "validation_dataset_indices": [1],
                         "test_dataset_indices": [1],
                     }
                 }
@@ -497,12 +499,12 @@ def test_train_federated_recommender_skips_final_evaluation_when_no_test_pairs_e
         )
         labels = pd.DataFrame(
             {
-                "client_id": [f"client_{client_idx:03d}"],
-                "dataset_index": [0],
-                "pair_1": ["a"],
-                "pair_2": ["b"],
-                "label": [0],
-                "split": ["train"],
+                "client_id": [f"client_{client_idx:03d}"] * 2,
+                "dataset_index": [0, 1],
+                "pair_1": ["a", "a"],
+                "pair_2": ["b", "b"],
+                "label": [0, 0],
+                "split": ["train", "validation"],
             }
         )
         candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
@@ -512,6 +514,7 @@ def test_train_federated_recommender_skips_final_evaluation_when_no_test_pairs_e
                 {
                     "instance_split": {
                         "train_dataset_indices": [0],
+                        "validation_dataset_indices": [1],
                         "test_dataset_indices": [1],
                     }
                 }
@@ -519,27 +522,22 @@ def test_train_federated_recommender_skips_final_evaluation_when_no_test_pairs_e
             encoding="utf-8",
         )
 
-    artifacts, metadata = train_federated_recommender(
-        RecommenderFederatedTrainingConfig(
-            run_id=run_id,
-            selection_id=selection,
-            persona=persona,
-            paths=paths,
-            rounds=2,
-            epochs=5,
-            batch_size=2,
-            learning_rate=0.2,
-            simulation_backend="debug-sequential",
-            min_available_clients=2,
-            top_k=(1, 2),
+    with pytest.raises(FileNotFoundError, match="No labeled recommender inputs were found"):
+        train_federated_recommender(
+            RecommenderFederatedTrainingConfig(
+                run_id=run_id,
+                selection_id=selection,
+                persona=persona,
+                paths=paths,
+                rounds=2,
+                epochs=5,
+                batch_size=2,
+                learning_rate=0.2,
+                simulation_backend="debug-sequential",
+                min_available_clients=2,
+                top_k=(1, 2),
+            )
         )
-    )
-
-    evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
-    assert metadata["status"] == "completed"
-    assert metadata["clients_without_eval"] == ["client_000", "client_001"]
-    assert evaluation["status"] == "skipped_no_test_pairs"
-    assert evaluation["client_count"] == 0
 
 
 @pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")
@@ -571,12 +569,12 @@ def test_train_federated_recommender_writes_model_metadata_and_evaluation(tmp_pa
         )
         labels = pd.DataFrame(
             {
-                "client_id": [f"client_{client_idx:03d}"] * 2,
-                "dataset_index": [0, 1],
-                "pair_1": ["a", "a"],
-                "pair_2": ["b", "b"],
-                "label": [0, 0],
-                "split": ["train", "test"],
+                "client_id": [f"client_{client_idx:03d}"] * 3,
+                "dataset_index": [0, 1, 1],
+                "pair_1": ["a", "a", "a"],
+                "pair_2": ["b", "b", "b"],
+                "label": [0, 0, 0],
+                "split": ["train", "validation", "test"],
             }
         )
         candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
@@ -586,6 +584,7 @@ def test_train_federated_recommender_writes_model_metadata_and_evaluation(tmp_pa
                 {
                     "instance_split": {
                         "train_dataset_indices": [0],
+                        "validation_dataset_indices": [1],
                         "test_dataset_indices": [1],
                     }
                 }
@@ -659,12 +658,12 @@ def test_train_federated_recommender_can_skip_round_evaluation(tmp_path) -> None
         )
         labels = pd.DataFrame(
             {
-                "client_id": [f"client_{client_idx:03d}"] * 2,
-                "dataset_index": [0, 1],
-                "pair_1": ["a", "a"],
-                "pair_2": ["b", "b"],
-                "label": [0, 0],
-                "split": ["train", "test"],
+                "client_id": [f"client_{client_idx:03d}"] * 3,
+                "dataset_index": [0, 1, 1],
+                "pair_1": ["a", "a", "a"],
+                "pair_2": ["b", "b", "b"],
+                "label": [0, 0, 0],
+                "split": ["train", "validation", "test"],
             }
         )
         candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
@@ -674,6 +673,7 @@ def test_train_federated_recommender_can_skip_round_evaluation(tmp_path) -> None
                 {
                     "instance_split": {
                         "train_dataset_indices": [0],
+                        "validation_dataset_indices": [1],
                         "test_dataset_indices": [1],
                     }
                 }
@@ -736,12 +736,12 @@ def test_train_federated_recommender_supports_explicit_pairwise_logistic_selecti
         )
         labels = pd.DataFrame(
             {
-                "client_id": [f"client_{client_idx:03d}"] * 2,
-                "dataset_index": [0, 1],
-                "pair_1": ["a", "a"],
-                "pair_2": ["b", "b"],
-                "label": [0, 0],
-                "split": ["train", "test"],
+                "client_id": [f"client_{client_idx:03d}"] * 3,
+                "dataset_index": [0, 1, 1],
+                "pair_1": ["a", "a", "a"],
+                "pair_2": ["b", "b", "b"],
+                "label": [0, 0, 0],
+                "split": ["train", "validation", "test"],
             }
         )
         candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
@@ -751,6 +751,7 @@ def test_train_federated_recommender_supports_explicit_pairwise_logistic_selecti
                 {
                     "instance_split": {
                         "train_dataset_indices": [0],
+                        "validation_dataset_indices": [1],
                         "test_dataset_indices": [1],
                     }
                 }
