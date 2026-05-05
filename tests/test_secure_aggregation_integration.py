@@ -112,6 +112,51 @@ def test_secure_aggregator_matches_plain_shared_weighted_average() -> None:
     np.testing.assert_allclose(secure_average[1], plain_average[1], atol=1e-5, rtol=0.0)
 
 
+
+
+def test_server_normalized_secure_payloads_require_rescaling_for_partial_results() -> None:
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        secure_aggregation=True,
+        secure_num_helpers=5,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_quantization_scale=100_000,
+        secure_seed=17,
+    )
+    secure_aggregator = _build_secure_aggregator(config)
+    parameter_sets = [
+        [np.array([0.25, 1.0]), np.array([0.5])],
+        [np.array([1.25, -0.5]), np.array([1.0])],
+    ]
+    weights = [4, 3]
+    global_normalizer = 12.0
+    participating_weight = float(sum(weights))
+
+    plain_average = _weighted_average_parameter_sets(parameter_sets, weights)
+    normalized_payloads = [
+        [array * (float(weight) / global_normalizer) for array in payload]
+        for payload, weight in zip(parameter_sets, weights, strict=True)
+    ]
+    secure_result = secure_aggregator.aggregate(normalized_payloads, round_id=11)
+    rescaled_average = [
+        tensor * (global_normalizer / participating_weight)
+        for tensor in secure_result.aggregated_tensors
+    ]
+
+    np.testing.assert_allclose(
+        rescaled_average[0],
+        plain_average[0],
+        atol=1e-5,
+        rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        rescaled_average[1],
+        plain_average[1],
+        atol=1e-5,
+        rtol=0.0,
+    )
+
 def test_secure_aggregator_matches_plain_average_with_server_normalized_weights() -> None:
     config = FederatedTrainingConfig(
         dataset_name="adult_income",

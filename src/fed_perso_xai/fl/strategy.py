@@ -476,10 +476,7 @@ if fl is not None:
             if not self.training_config.secure_aggregation:
                 return config
 
-            full_participation = (
-                float(self.training_config.fit_fraction) >= 1.0
-                and self.training_config.min_available_clients >= self.training_config.num_clients
-            ) or (float(self.training_config.fit_fraction) >= 1.0)
+            full_participation = float(self.training_config.fit_fraction) >= 1.0
             if full_participation:
                 total_examples = int(self.recorder.total_client_examples)
                 if total_examples <= 0:
@@ -647,7 +644,11 @@ if fl is not None:
                 encoded_updates,
                 round_id=server_round,
             )
-            scale_factor = 1.0 if total_examples_normalizer is not None else (1.0 / total_weight)
+            scale_factor = (
+                float(total_examples_normalizer) / total_weight
+                if total_examples_normalizer is not None
+                else (1.0 / total_weight)
+            )
             aggregated = self._compose_updated_parameters(
                 _scale_parameter_set(secure_result.aggregated_tensors, scale_factor)
             )
