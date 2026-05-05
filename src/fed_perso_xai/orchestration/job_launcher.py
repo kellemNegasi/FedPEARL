@@ -14,11 +14,13 @@ from typing import Any
 
 import yaml
 
+from fed_perso_xai.data.catalog import compact_dataset_name
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.explain_eval import plan_explain_eval_jobs
 from fed_perso_xai.orchestration.federated_training import (
     train_federated_from_partitions,
 )
+from fed_perso_xai.models.registry import compact_model_name
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     DataPreparationConfig,
@@ -30,6 +32,12 @@ from fed_perso_xai.utils.config import (
     PreprocessingConfig,
 )
 from fed_perso_xai.utils.paths import partition_root
+
+_MAX_FILENAME_COMPONENT_LENGTH = 255
+_ATOMIC_TMP_SUFFIX_RESERVE = 48
+_MAX_PLAN_BASENAME_LENGTH = _MAX_FILENAME_COMPONENT_LENGTH - _ATOMIC_TMP_SUFFIX_RESERVE
+_MAX_PLAN_RUN_MARKER_LENGTH = 40
+_MAX_PLAN_PREFIX_LENGTH = _MAX_PLAN_BASENAME_LENGTH - len("__") - _MAX_PLAN_RUN_MARKER_LENGTH - len(".jsonl")
 
 
 @dataclass(frozen=True)
@@ -172,6 +180,7 @@ def run_job_launcher(
                     plan_path=plan_path,
                     array_range=str(plan_summary["array_range"]),
                     run_id=run_id,
+                    experiment=experiment,
                 )
                 run_record["slurm_script_path"] = str(script_path)
                 if should_submit:
@@ -413,7 +422,8 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
                     l2_regularization=l2_regularization,
                 )
                 default_label = (
-                    f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-l2{l2_regularization}"
+                    f"{compact_model_name(model_name)}-epochs{epochs}-batch{batch_size}-"
+                    f"lr{learning_rate}-l2{l2_regularization}"
                 )
             label = raw_model.get("label") or default_label
             entries.append({"label": label, "name": model_name, "config": config})
@@ -478,9 +488,14 @@ def _build_training_config(
 
 
 def _plan_path(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment, run_id: str) -> Path:
-    plan_dir = Path(str(explain_cfg.get("plan_dir", "job_launcher/plans")))
+    plan_dir = _resolve_formatted_output_dir(
+        template=explain_cfg.get("plan_dir", "job_launcher/plans"),
+        experiment=experiment,
+    )
     plan_dir.mkdir(parents=True, exist_ok=True)
-    return plan_dir / f"{_plan_stem(explain_cfg=explain_cfg, experiment=experiment)}__{_safe_segment(run_id)}.jsonl"
+    plan_prefix = _plan_file_prefix(explain_cfg=explain_cfg, experiment=experiment)
+    run_marker = _plan_run_marker(run_id)
+    return plan_dir / f"{plan_prefix}__{run_marker}.jsonl"
 
 
 def _write_slurm_array_script(
@@ -489,8 +504,12 @@ def _write_slurm_array_script(
     plan_path: Path,
     array_range: str,
     run_id: str,
+    experiment: LauncherExperiment,
 ) -> Path:
-    script_dir = Path(str(slurm_cfg.get("script_dir", "job_launcher/slurm")))
+    script_dir = _resolve_formatted_output_dir(
+        template=slurm_cfg.get("script_dir", "job_launcher/slurm"),
+        experiment=experiment,
+    )
     script_dir.mkdir(parents=True, exist_ok=True)
     script_path = script_dir / f"{plan_path.stem}.sbatch"
     concurrency = slurm_cfg.get("array_concurrency")
@@ -663,16 +682,31 @@ def _render_run_id(template: Any, experiment: LauncherExperiment) -> str | None:
     if template is None:
         return None
     return str(template).format(
-        dataset=experiment.dataset_name,
+        dataset=compact_dataset_name(experiment.dataset_name),
         seed=experiment.seed,
         num_clients=experiment.num_clients,
         alpha=experiment.alpha,
         model_label=experiment.model_label,
-        model_name=experiment.model_name,
+        model_name=compact_model_name(experiment.model_name),
         rounds=experiment.rounds,
         strategy=experiment.strategy_name,
         simulation_backend=experiment.simulation_backend,
     )
+
+
+def _resolve_formatted_output_dir(*, template: Any, experiment: LauncherExperiment) -> Path:
+    rendered = str(template).format(
+        dataset=compact_dataset_name(experiment.dataset_name),
+        seed=experiment.seed,
+        num_clients=experiment.num_clients,
+        alpha=experiment.alpha,
+        model_label=experiment.model_label,
+        model_name=compact_model_name(experiment.model_name),
+        rounds=experiment.rounds,
+        strategy=experiment.strategy_name,
+        simulation_backend=experiment.simulation_backend,
+    )
+    return Path(rendered)
 
 
 def _explain_plan_signature(*, explain_cfg: dict[str, Any]) -> str:
@@ -694,10 +728,31 @@ def _explain_plan_signature(*, explain_cfg: dict[str, Any]) -> str:
 def _plan_stem(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment) -> str:
     plan_signature = _explain_plan_signature(explain_cfg=explain_cfg)
     return (
-        f"{experiment.dataset_name}__clients-{experiment.num_clients}"
+        f"{compact_dataset_name(experiment.dataset_name)}__clients-{experiment.num_clients}"
         f"__alpha-{experiment.alpha}__seed-{experiment.seed}"
         f"__{experiment.model_label}__plan-{plan_signature}"
     )
+
+
+def _plan_file_prefix(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment) -> str:
+    return _shorten_segment(
+        _plan_stem(explain_cfg=explain_cfg, experiment=experiment),
+        max_length=_MAX_PLAN_PREFIX_LENGTH,
+    )
+
+
+def _plan_run_marker(run_id: str) -> str:
+    safe_run_id = _safe_segment(run_id)
+    timestamp_match = re.search(r"(\d{8}t\d{6,})", safe_run_id)
+    suffix_match = re.search(r"-([0-9a-f]{8,})$", safe_run_id)
+    if timestamp_match or suffix_match:
+        parts = ["run"]
+        if timestamp_match:
+            parts.append(timestamp_match.group(1))
+        if suffix_match:
+            parts.append(suffix_match.group(1)[:12])
+        return _shorten_segment("-".join(parts), max_length=_MAX_PLAN_RUN_MARKER_LENGTH)
+    return _shorten_segment(f"run-{safe_run_id}", max_length=_MAX_PLAN_RUN_MARKER_LENGTH)
 
 
 def _handle_matching_plan_outputs(
@@ -705,18 +760,24 @@ def _handle_matching_plan_outputs(
     explain_cfg: dict[str, Any],
     experiment: LauncherExperiment,
 ) -> list[str]:
-    plan_dir = Path(str(explain_cfg.get("plan_dir", "job_launcher/plans")))
-    script_dir = Path(str((explain_cfg.get("slurm") or {}).get("script_dir", "job_launcher/slurm")))
-    plan_stem = _plan_stem(explain_cfg=explain_cfg, experiment=experiment)
-    matching_plans = sorted(plan_dir.glob(f"{plan_stem}__*.jsonl"))
-    matching_scripts = sorted(script_dir.glob(f"{plan_stem}__*.sbatch"))
+    plan_dir = _resolve_formatted_output_dir(
+        template=explain_cfg.get("plan_dir", "job_launcher/plans"),
+        experiment=experiment,
+    )
+    script_dir = _resolve_formatted_output_dir(
+        template=(explain_cfg.get("slurm") or {}).get("script_dir", "job_launcher/slurm"),
+        experiment=experiment,
+    )
+    plan_prefix = _plan_file_prefix(explain_cfg=explain_cfg, experiment=experiment)
+    matching_plans = sorted(plan_dir.glob(f"{plan_prefix}__*.jsonl"))
+    matching_scripts = sorted(script_dir.glob(f"{plan_prefix}__*.sbatch"))
     if not matching_plans and not matching_scripts:
         return []
 
     overwrite_matching = bool(explain_cfg.get("overwrite_matching_plans", False))
     message = (
         "Found existing explain/eval launcher outputs for the same configuration "
-        f"({len(matching_plans)} plan(s), {len(matching_scripts)} script(s)) under stem '{plan_stem}'."
+        f"({len(matching_plans)} plan(s), {len(matching_scripts)} script(s)) under stem '{plan_prefix}'."
     )
     if overwrite_matching:
         for path in [*matching_plans, *matching_scripts]:
@@ -781,3 +842,14 @@ def _safe_segment(value: str) -> str:
         .replace(" ", "-")
         .replace(":", "-")
     )
+
+
+def _shorten_segment(value: str, *, max_length: int) -> str:
+    text = _safe_segment(value)
+    if len(text) <= max_length:
+        return text
+    if max_length < 17:
+        raise ValueError(f"max_length must be at least 17 characters, got {max_length}.")
+    digest = sha256(text.encode("utf-8")).hexdigest()[:12]
+    prefix_length = max_length - len("--") - len(digest)
+    return f"{text[:prefix_length]}--{digest}"

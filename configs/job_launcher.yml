@@ -13,7 +13,7 @@ paths:
   cache_dir: data/cache/openml
 
 datasets:
-  - adult_income
+  - cencus_income
 
 seeds:
   - 42
@@ -40,9 +40,9 @@ models:
     name: logistic_regression
     params:
       epochs: 5
-      batch_size: 64
-      learning_rate: 0.05
-      l2_regularization: 0.0
+      batch_size: 256
+      learning_rate: 0.005
+      l2_regularization: 0.01
 
 training:
   rounds: 200
@@ -66,11 +66,11 @@ explain_eval:
   random_state: 42
   skip_existing: true
   force: false
-  plan_dir: job_launcher/plans
+  plan_dir: plans/{dataset}/{model_name}
   slurm:
     enabled: true
     submit: false
-    script_dir: job_launcher/slurm
+    script_dir: plans/{dataset}/{model_name}/slurm
     log_dir: logs
     job_name: explain-eval
     array_concurrency: 32
@@ -79,5 +79,5 @@ explain_eval:
     sbatch_args:
       - --partition=main
       - --cpus-per-task=4
-      - --mem=16G
+      - --mem=32G
       - --time=06:00:00

@@ -93,7 +93,7 @@ def test_job_launcher_dry_run_expands_yaml_matrix(tmp_path) -> None:
     assert {run["dry_run"] for run in summary["runs"]} == {True}
 
 
-def test_job_launcher_plan_path_keeps_timestamped_run_id(tmp_path) -> None:
+def test_job_launcher_plan_path_uses_compact_run_marker(tmp_path) -> None:
     config_path = _write_launcher_config(tmp_path)
     raw_config = job_launcher._load_launcher_yaml(config_path)
     experiment = job_launcher._expand_experiments(raw_config)[0]
@@ -102,18 +102,20 @@ def test_job_launcher_plan_path_keeps_timestamped_run_id(tmp_path) -> None:
     first = job_launcher._plan_path(
         explain_cfg=explain_cfg,
         experiment=experiment,
-        run_id="run-a",
+        run_id="federated-training-cencus_income-20260505t184021974454+0000-logreg-5clients-alpha0.1-seed42-2a4d34215575",
     )
     second = job_launcher._plan_path(
         explain_cfg=explain_cfg,
         experiment=experiment,
-        run_id="run-b",
+        run_id="federated-training-cencus_income-20260505t184021974455+0000-logreg-5clients-alpha0.1-seed42-aaaaaaaaaaaa",
     )
 
     assert first != second
     assert "plan-" in first.name
-    assert "run-a" in first.name
-    assert "run-b" in second.name
+    assert "20260505t184021974454" in first.name
+    assert "2a4d34215575" in first.name
+    assert "logistic_regression-5clients-alpha0.1-seed42" not in first.name
+    assert len(first.name) <= job_launcher._MAX_PLAN_BASENAME_LENGTH
 
 
 def test_job_launcher_plan_path_changes_when_explain_settings_change(tmp_path) -> None:
@@ -141,7 +143,7 @@ def test_job_launcher_warns_when_matching_plan_outputs_exist(tmp_path) -> None:
     raw_config = job_launcher._load_launcher_yaml(config_path)
     experiment = job_launcher._expand_experiments(raw_config)[0]
     explain_cfg = raw_config["explain_eval"]
-    stem = job_launcher._plan_stem(explain_cfg=explain_cfg, experiment=experiment)
+    stem = job_launcher._plan_file_prefix(explain_cfg=explain_cfg, experiment=experiment)
     plan_dir = Path(explain_cfg["plan_dir"])
     script_dir = Path(explain_cfg["slurm"]["script_dir"])
     plan_dir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +192,7 @@ def test_job_launcher_can_overwrite_matching_plan_outputs(tmp_path) -> None:
     raw_config = job_launcher._load_launcher_yaml(config_path)
     experiment = job_launcher._expand_experiments(raw_config)[0]
     explain_cfg = raw_config["explain_eval"]
-    stem = job_launcher._plan_stem(explain_cfg=explain_cfg, experiment=experiment)
+    stem = job_launcher._plan_file_prefix(explain_cfg=explain_cfg, experiment=experiment)
     plan_dir = Path(explain_cfg["plan_dir"])
     script_dir = Path(explain_cfg["slurm"]["script_dir"])
     plan_dir.mkdir(parents=True, exist_ok=True)
@@ -583,3 +585,63 @@ def test_launch_experiment_jobs_cli_uses_launcher(tmp_path, monkeypatch, capsys)
     assert calls["config_path"] == config_path
     assert calls["dry_run"] is True
     assert calls["force_training"] is True
+
+
+
+def test_job_launcher_plan_and_script_dirs_support_templates(tmp_path) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={
+            "datasets": ["adult_income_large"],
+            "models": [
+                {
+                    "label": "logreg-small",
+                    "name": "logistic_regression",
+                    "params": {
+                        "epochs": 2,
+                        "batch_size": 4,
+                        "learning_rate": 0.1,
+                        "l2_regularization": 0.0,
+                    },
+                }
+            ],
+            "explain_eval": {
+                "enabled": True,
+                "clients": "all",
+                "split": "test",
+                "explainers": "lime",
+                "configs": "lime__kernel-1.5__samples-50",
+                "max_instances": 5,
+                "random_state": 11,
+                "skip_existing": True,
+                "plan_dir": str(tmp_path / "plans" / "{dataset}" / "{model_name}"),
+                "slurm": {
+                    "enabled": True,
+                    "submit": False,
+                    "script_dir": str(tmp_path / "plans" / "{dataset}" / "{model_name}" / "slurm"),
+                    "job_name": "xai-test",
+                    "array_concurrency": 2,
+                    "sbatch_args": ["--cpus-per-task=1", "--mem=1G"],
+                },
+            },
+        },
+    )
+
+    raw_config = job_launcher._load_launcher_yaml(config_path)
+    experiment = job_launcher._expand_experiments(raw_config)[0]
+    explain_cfg = raw_config["explain_eval"]
+    plan_path = job_launcher._plan_path(
+        explain_cfg=explain_cfg,
+        experiment=experiment,
+        run_id="run-123",
+    )
+    script_path = job_launcher._write_slurm_array_script(
+        slurm_cfg=explain_cfg["slurm"],
+        plan_path=plan_path,
+        array_range="0-0",
+        run_id="run-123",
+        experiment=experiment,
+    )
+
+    assert plan_path.parent == tmp_path / "plans" / "cencus_income" / "logreg"
+    assert script_path.parent == tmp_path / "plans" / "cencus_income" / "logreg" / "slurm"

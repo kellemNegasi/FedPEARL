@@ -84,6 +84,10 @@ def test_default_dataset_registry_includes_large_adult_dataset() -> None:
     from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
 
     spec = DEFAULT_DATASET_REGISTRY.get("adult_income_large")
+    alias_spec = DEFAULT_DATASET_REGISTRY.get("cencus_income")
 
     assert spec.openml_data_id == 4535
+    assert spec.target_column == "V42"
+    assert spec.display_name == "Cencus Income"
+    assert alias_spec == spec
     assert "224k" in spec.description

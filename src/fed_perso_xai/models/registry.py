@@ -16,6 +16,10 @@ from fed_perso_xai.utils.config import LogisticRegressionConfig, MLPConfig
 ModelBuilder = Callable[[int, Any], TabularClassifier]
 ParameterInitializer = Callable[[int, Any], list[np.ndarray]]
 
+_MODEL_NAME_COMPACT_ALIASES = {
+    "logistic_regression": "logreg",
+}
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -148,3 +152,9 @@ def initialize_model_parameters(
             f"received {type(config).__name__}."
         )
     return spec.initialize_parameters(n_features, config)
+
+
+def compact_model_name(model_name: str) -> str:
+    """Return a short filesystem-friendly identifier for a model name."""
+
+    return _MODEL_NAME_COMPACT_ALIASES.get(str(model_name), str(model_name))

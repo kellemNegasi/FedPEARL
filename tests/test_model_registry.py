@@ -5,7 +5,13 @@ from pathlib import Path
 
 import numpy as np
 
-from fed_perso_xai.models.registry import ModelRegistry, ModelSpec, create_model, initialize_model_parameters
+from fed_perso_xai.models.registry import (
+    ModelRegistry,
+    ModelSpec,
+    compact_model_name,
+    create_model,
+    initialize_model_parameters,
+)
 
 
 @dataclass(frozen=True)
@@ -93,3 +99,8 @@ def test_default_registry_builds_mlp_classifier() -> None:
 
     assert len(model.get_parameters()) == 4
     assert [parameter.shape for parameter in parameters] == [(4, 8), (8,), (8, 1), (1,)]
+
+
+def test_compact_model_name_shortens_logistic_regression() -> None:
+    assert compact_model_name("logistic_regression") == "logreg"
+    assert compact_model_name("mlp_classifier") == "mlp_classifier"

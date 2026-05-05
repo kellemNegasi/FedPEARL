@@ -15,6 +15,9 @@ import numpy as np
 import pandas as pd
 import sklearn
 
+from fed_perso_xai.data.catalog import compact_dataset_name
+from fed_perso_xai.models.registry import compact_model_name
+
 
 def build_run_id(
     *,
@@ -30,12 +33,13 @@ def build_run_id(
     """Build a stable run identifier."""
 
     parts = [experiment_type, dataset_name]
+    parts = [experiment_type, compact_dataset_name(dataset_name)]
     if timestamp:
         compact = timestamp.replace("-", "").replace(":", "").replace("+00:00", "z")
         compact = compact.replace("T", "t").replace(".", "")
         parts.append(compact.lower())
     if model_name:
-        parts.append(model_name)
+        parts.append(compact_model_name(model_name))
     if num_clients is not None:
         parts.append(f"{num_clients}clients")
     if alpha is not None:

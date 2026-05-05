@@ -16,8 +16,9 @@ if str(LCC_SRC) not in sys.path:
 
 
 def _build_mock_frame(dataset_name: str) -> tuple[pd.DataFrame, str]:
-    if dataset_name in {"adult_income", "adult_income_large"}:
-        target_column = "class"
+    if dataset_name in {"adult_income", "adult_income_large", "cencus_income"}:
+        is_adult_income = dataset_name == "adult_income"
+        target_column = "class" if is_adult_income else "V42"
         frame = pd.DataFrame(
             {
                 "age": [39, 50, 38, 53, 28, 37, 49, 52, 31, 42, 44, 29],
@@ -53,18 +54,18 @@ def _build_mock_frame(dataset_name: str) -> tuple[pd.DataFrame, str]:
                 ],
                 "constant_flag": ["same"] * 12,
                 target_column: [
-                    ">50K",
-                    "<=50K",
-                    ">50K",
-                    "<=50K",
-                    ">50K",
-                    "<=50K",
-                    ">50K",
-                    "<=50K",
-                    ">50K",
-                    "<=50K",
-                    ">50K",
-                    "<=50K",
+                    ">50K" if is_adult_income else " 50000+.",
+                    "<=50K" if is_adult_income else " - 50000.",
+                    ">50K" if is_adult_income else " 50000+.",
+                    "<=50K" if is_adult_income else " - 50000.",
+                    ">50K" if is_adult_income else " 50000+.",
+                    "<=50K" if is_adult_income else " - 50000.",
+                    ">50K" if is_adult_income else " 50000+.",
+                    "<=50K" if is_adult_income else " - 50000.",
+                    ">50K" if is_adult_income else " 50000+.",
+                    "<=50K" if is_adult_income else " - 50000.",
+                    ">50K" if is_adult_income else " 50000+.",
+                    "<=50K" if is_adult_income else " - 50000.",
                 ],
             },
             index=[f"{dataset_name}-adult-{idx}" for idx in range(12)],

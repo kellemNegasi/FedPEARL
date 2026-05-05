@@ -10,7 +10,7 @@ from fed_perso_xai.data.preprocessing import FrozenTabularPreprocessor
 from fed_perso_xai.utils.config import PreprocessingConfig
 
 
-@pytest.mark.parametrize("dataset_name", ["adult_income", "adult_income_large", "bank_marketing"])
+@pytest.mark.parametrize("dataset_name", ["adult_income", "adult_income_large", "cencus_income", "bank_marketing"])
 def test_supported_dataset_loading_smoke(mock_openml, tmp_path, dataset_name: str) -> None:
     frame = mock_openml(dataset_name)
     dataset = load_supported_dataset(dataset_name, cache_dir=tmp_path / "cache")
@@ -223,5 +223,45 @@ def test_dataset_loading_uses_openml_default_target_when_target_column_is_unspec
     dataset = load_openml_dataset(spec, cache_dir=tmp_path / "cache")
 
     assert captured_kwargs["target_column"] == "default-target"
+    assert dataset.X.columns.tolist() == ["feature_a", "feature_b"]
+    assert dataset.y.tolist() == [1, 0, 1, 0]
+
+
+def test_dataset_loading_can_resolve_frame_embedded_target_when_openml_target_is_missing(
+    monkeypatch, tmp_path
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "feature_a": [1, 2, 3, 4],
+            "feature_b": [10, 11, 12, 13],
+            "V42": [" 50000+.", " - 50000.", " 50000+.", " - 50000."],
+        },
+        index=[f"row-{idx}" for idx in range(4)],
+    )
+    spec = DatasetSpec(
+        key="adult_income_large_like",
+        display_name="Adult Income Large Like",
+        openml_data_id=4535,
+        target_transform=lambda value: int(str(value).strip() == "50000+."),
+        target_column="V42",
+    )
+
+    def fake_fetch_openml(*args, **kwargs):
+        return type(
+            "Bunch",
+            (),
+            {
+                "frame": frame,
+                "target": None,
+                "details": {"name": "adult-income-large-like", "version": "1"},
+            },
+        )()
+
+    monkeypatch.setattr("fed_perso_xai.data.loaders.fetch_openml", fake_fetch_openml)
+
+    from fed_perso_xai.data.loaders import load_openml_dataset
+
+    dataset = load_openml_dataset(spec, cache_dir=tmp_path / "cache")
+
     assert dataset.X.columns.tolist() == ["feature_a", "feature_b"]
     assert dataset.y.tolist() == [1, 0, 1, 0]

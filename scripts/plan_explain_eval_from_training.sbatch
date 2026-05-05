@@ -167,6 +167,7 @@ for row in experiment_rows:
             plan_path=plan_path,
             array_range=str(plan_summary["array_range"]),
             run_id=run_id,
+            experiment=experiment,
         )
         run_record["slurm_script_path"] = str(script_path)
         if submit_slurm:

@@ -7,6 +7,12 @@ from typing import Callable
 
 import pandas as pd
 
+_DATASET_NAME_COMPACT_ALIASES = {
+    "adult_income_large": "cencus_income",
+    "census_income": "cencus_income",
+    "cencus_income": "cencus_income",
+}
+
 
 DatasetCleaningHook = Callable[[pd.DataFrame], pd.DataFrame]
 TargetTransform = Callable[[object], int]
@@ -55,6 +61,7 @@ class DatasetSpec:
     cleaning_hook: DatasetCleaningHook | None = None
     feature_type_overrides: dict[str, str] = field(default_factory=dict)
     required_columns: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
     description: str = ""
 
 
@@ -63,25 +70,32 @@ class DatasetRegistry:
 
     def __init__(self, specs: list[DatasetSpec] | None = None) -> None:
         self._specs: dict[str, DatasetSpec] = {}
+        self._aliases: dict[str, str] = {}
         for spec in specs or []:
             self.register(spec)
 
     def register(self, spec: DatasetSpec) -> None:
         if spec.key in self._specs:
             raise ValueError(f"Dataset '{spec.key}' is already registered.")
+        for alias in spec.aliases:
+            if alias in self._specs or alias in self._aliases:
+                raise ValueError(f"Dataset alias '{alias}' is already registered.")
         self._specs[spec.key] = spec
+        for alias in spec.aliases:
+            self._aliases[alias] = spec.key
 
     def get(self, key: str) -> DatasetSpec:
         try:
-            return self._specs[key]
+            canonical_key = self._aliases.get(key, key)
+            return self._specs[canonical_key]
         except KeyError as exc:
-            supported = ", ".join(sorted(self._specs))
+            supported = ", ".join(sorted([*self._specs, *self._aliases]))
             raise ValueError(
                 f"Unsupported dataset '{key}'. Supported datasets: {supported}."
             ) from exc
 
     def list_keys(self) -> list[str]:
-        return sorted(self._specs)
+        return sorted([*self._specs, *self._aliases])
 
 
 DEFAULT_DATASET_REGISTRY = DatasetRegistry(
@@ -105,10 +119,12 @@ DEFAULT_DATASET_REGISTRY = DatasetRegistry(
         ),
         DatasetSpec(
             key="adult_income_large",
-            display_name="Adult Income Large",
+            display_name="Cencus Income",
             openml_data_id=4535,
             target_transform=_adult_income_transform,
+            target_column="V42",
             cleaning_hook=_replace_common_missing_tokens,
+            aliases=("cencus_income", "census_income"),
             description=(
                 "OpenML Census-Income / Adult-style binary classification benchmark "
                 "(data_id=4535, about 224k rows)."
@@ -122,3 +138,9 @@ def get_dataset_spec(dataset_name: str) -> DatasetSpec:
     """Return the dataset specification for a supported dataset key."""
 
     return DEFAULT_DATASET_REGISTRY.get(dataset_name)
+
+
+def compact_dataset_name(dataset_name: str) -> str:
+    """Return a short filesystem-friendly identifier for a dataset name."""
+
+    return _DATASET_NAME_COMPACT_ALIASES.get(str(dataset_name), str(dataset_name))
