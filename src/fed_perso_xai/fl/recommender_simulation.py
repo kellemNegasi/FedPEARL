@@ -14,6 +14,7 @@ from scipy.optimize import linear_sum_assignment
 from fed_perso_xai.fl.client import (
     FederatedPairwiseRecommenderClient,
     RecommenderClientData,
+    SecurePayloadClippingSummary,
     build_secure_aggregation_client_spec,
 )
 from fed_perso_xai.fl.simulation import (
@@ -202,6 +203,56 @@ def _apply_assignment_hysteresis(
         adjusted_assignments[client_id] = previous_cluster_id
         retained_count += 1
     return adjusted_assignments, int(retained_count)
+
+
+def _summarize_secure_clipping(
+    client_summaries: Mapping[str, SecurePayloadClippingSummary],
+) -> dict[str, Any] | None:
+    clipped_clients = [
+        {
+            "client_id": str(client_id),
+            "clip_threshold_abs": (
+                None
+                if summary.clip_threshold_abs is None
+                else float(summary.clip_threshold_abs)
+            ),
+            "raw_weighted_payload_max_abs": float(summary.raw_weighted_payload_max_abs),
+            "effective_weighted_payload_max_abs": float(
+                summary.effective_weighted_payload_max_abs
+            ),
+            "raw_max_component_value": float(summary.raw_max_component_value),
+            "clipped_max_component_value": float(summary.clipped_max_component_value),
+            "clipped_component_count": int(summary.clipped_component_count),
+            "total_component_count": int(summary.total_component_count),
+            "clipped_fraction": float(summary.clipped_fraction),
+            "total_clipping_l1": float(summary.total_clipping_l1),
+            "max_clipping_delta_abs": float(summary.max_clipping_delta_abs),
+        }
+        for client_id, summary in client_summaries.items()
+        if summary.clip_applied
+    ]
+    if not clipped_clients:
+        return None
+    return {
+        "applied_client_count": int(len(clipped_clients)),
+        "total_client_count": int(len(client_summaries)),
+        "max_raw_weighted_payload_abs": float(
+            max(item["raw_weighted_payload_max_abs"] for item in clipped_clients)
+        ),
+        "max_effective_weighted_payload_abs": float(
+            max(item["effective_weighted_payload_max_abs"] for item in clipped_clients)
+        ),
+        "total_clipped_components": int(
+            sum(item["clipped_component_count"] for item in clipped_clients)
+        ),
+        "total_components": int(
+            sum(item["total_component_count"] for item in clipped_clients)
+        ),
+        "total_clipping_l1": float(
+            sum(item["total_clipping_l1"] for item in clipped_clients)
+        ),
+        "clients": clipped_clients,
+    }
 
 
 def run_federated_recommender_training(
@@ -537,6 +588,7 @@ def _run_clustered_recommender_training(
         encoded_updates: dict[str, Any] = {}
         raw_clustering_vectors: dict[str, np.ndarray] = {}
         client_weighted_payload_bounds: dict[str, float] = {}
+        client_clipping_summaries: dict[str, SecurePayloadClippingSummary] = {}
         local_weights: dict[str, int] = {}
         train_losses: dict[str, float] = {}
         is_warmup_round = server_round <= warmup_rounds
@@ -581,6 +633,7 @@ def _run_clustered_recommender_training(
             )
             encoded_updates[client_name] = client_update.encoded_model_update
             client_weighted_payload_bounds[client_name] = float(client_update.weighted_payload_max_abs)
+            client_clipping_summaries[client_name] = client_update.clipping_summary
             local_weights[client_name] = int(client_update.num_examples)
             train_losses[client_name] = float(client_update.train_loss)
             if client_update.raw_clustering_vector is not None:
@@ -590,6 +643,7 @@ def _run_clustered_recommender_training(
                 ).copy()
 
         weighted_train_loss = _weighted_scalar_average(train_losses, local_weights)
+        clipping_summary = _summarize_secure_clipping(client_clipping_summaries)
         if is_warmup_round:
             aggregated_global = secure_aggregator.aggregate(
                 client_updates=encoded_updates,
@@ -625,6 +679,7 @@ def _run_clustered_recommender_training(
                         "mode": "warmup_global",
                         "num_clusters": int(clustering_config.k),
                         "num_contributors": int(len(encoded_updates)),
+                        "clipping": clipping_summary,
                     },
                     "evaluate_skipped": True,
                 }
@@ -749,6 +804,7 @@ def _run_clustered_recommender_training(
                     "num_clusters": int(clustering_config.k),
                     "cluster_sizes": dict(cluster_sizes),
                     "num_contributors": int(len(encoded_updates)),
+                    "clipping": clipping_summary,
                 },
                 "evaluate_skipped": True,
             }

@@ -201,6 +201,8 @@ class FederatedTrainingConfig(ExperimentConfig):
     secure_field_modulus: int = 2_147_483_647
     secure_quantization_scale: int = 1 << 16
     secure_seed: int = 0
+    secure_clip_weighted_payload: bool = False
+    secure_clip_budget_fraction: float = 0.95
     simulation_resources: dict[str, float] = field(
         default_factory=lambda: {"num_cpus": 1.0, "num_gpus": 0.0}
     )
@@ -243,6 +245,12 @@ class FederatedTrainingConfig(ExperimentConfig):
             minimum=1,
         )
         _require_non_negative_integer("secure_seed", self.secure_seed)
+        _require_fraction_or_one(
+            "secure_clip_budget_fraction",
+            self.secure_clip_budget_fraction,
+        )
+        if float(self.secure_clip_budget_fraction) <= 0.0:
+            raise ValueError("secure_clip_budget_fraction must be greater than 0.")
         _validate_simulation_resources(self.simulation_resources)
 
         from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
@@ -286,6 +294,8 @@ class RecommenderFederatedTrainingConfig:
     secure_field_modulus: int = 2_147_483_647
     secure_quantization_scale: int = 1 << 16
     secure_seed: int = 0
+    secure_clip_weighted_payload: bool = False
+    secure_clip_budget_fraction: float = 0.95
     clustering: "RecommenderClusteringConfig" = field(
         default_factory=lambda: RecommenderClusteringConfig()
     )
@@ -346,6 +356,12 @@ class RecommenderFederatedTrainingConfig:
             minimum=1,
         )
         _require_non_negative_integer("secure_seed", self.secure_seed)
+        _require_fraction_or_one(
+            "secure_clip_budget_fraction",
+            self.secure_clip_budget_fraction,
+        )
+        if float(self.secure_clip_budget_fraction) <= 0.0:
+            raise ValueError("secure_clip_budget_fraction must be greater than 0.")
         if not isinstance(self.clustering, RecommenderClusteringConfig):
             raise TypeError("clustering must be a RecommenderClusteringConfig instance.")
         if self.runtime_num_clients > 0 and self.clustering.enabled:
@@ -406,6 +422,8 @@ class RecommenderFederatedTrainingConfig:
             secure_field_modulus=self.secure_field_modulus,
             secure_quantization_scale=self.secure_quantization_scale,
             secure_seed=self.secure_seed,
+            secure_clip_weighted_payload=self.secure_clip_weighted_payload,
+            secure_clip_budget_fraction=self.secure_clip_budget_fraction,
             clustering=self.clustering,
             simulation_resources=dict(self.simulation_resources),
         )

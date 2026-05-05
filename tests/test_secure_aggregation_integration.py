@@ -7,6 +7,8 @@ import pytest
 
 from fed_perso_xai.fl.client import (
     SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
+    SecureAggregationClientSpec,
+    _clip_weighted_secure_payload,
     apply_shared_parameter_payload,
     extract_shared_parameter_payload,
 )
@@ -175,6 +177,38 @@ def test_secure_aggregator_handles_large_modulus_with_many_helpers() -> None:
         atol=1e-6,
         rtol=0.0,
     )
+
+
+def test_weighted_secure_payload_clipping_reports_raw_and_clipped_values() -> None:
+    weighted_parameters, summary = _clip_weighted_secure_payload(
+        parameters=[np.array([0.6, -0.3, 0.05], dtype=np.float64)],
+        weight=10,
+        secure_spec=SecureAggregationClientSpec(
+            enabled=True,
+            field_modulus=101,
+            quantization_scale=10,
+            clip_weighted_payload=True,
+            clip_budget_fraction=1.0,
+            expected_num_contributors=2,
+        ),
+    )
+
+    np.testing.assert_allclose(
+        weighted_parameters[0],
+        np.array([2.5, -2.5, 0.5], dtype=np.float64),
+        atol=0.0,
+        rtol=0.0,
+    )
+    assert summary.clip_applied is True
+    assert summary.clip_threshold_abs == pytest.approx(2.5)
+    assert summary.raw_weighted_payload_max_abs == pytest.approx(6.0)
+    assert summary.effective_weighted_payload_max_abs == pytest.approx(2.5)
+    assert summary.raw_max_component_value == pytest.approx(6.0)
+    assert summary.clipped_max_component_value == pytest.approx(2.5)
+    assert summary.clipped_component_count == 2
+    assert summary.total_component_count == 3
+    assert summary.total_clipping_l1 == pytest.approx(4.0)
+    assert summary.max_clipping_delta_abs == pytest.approx(3.5)
 
 
 @pytest.mark.skipif(

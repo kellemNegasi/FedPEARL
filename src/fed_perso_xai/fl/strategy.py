@@ -24,7 +24,9 @@ from fed_perso_xai.fl.client import (
     SECURE_PAYLOAD_ENCODING_KEY,
     SECURE_PAYLOAD_ENCODING_VALUE,
     SECURE_PAYLOAD_LAYOUT_KEY,
+    SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY,
     SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
+    deserialize_secure_payload_clipping_summary,
     deserialize_secure_payload_layout,
     extract_shared_parameter_payload,
 )
@@ -244,6 +246,63 @@ def _validate_encoded_secure_aggregate_bound(
     return total_max_abs_bound
 
 
+def _build_secure_clipping_report(results: Sequence[tuple[Any, Any]]) -> dict[str, Any] | None:
+    clipping_clients: list[dict[str, Any]] = []
+    total_clients = 0
+    for _, fit_res in results:
+        total_clients += 1
+        payload = fit_res.metrics.get(SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY)
+        if not isinstance(payload, str):
+            continue
+        summary = deserialize_secure_payload_clipping_summary(payload)
+        if not summary.clip_applied:
+            continue
+        clipping_clients.append(
+            {
+                "client_id": str(fit_res.metrics.get("client_id", "")),
+                "num_examples": int(getattr(fit_res, "num_examples", 0)),
+                "clip_threshold_abs": (
+                    None
+                    if summary.clip_threshold_abs is None
+                    else float(summary.clip_threshold_abs)
+                ),
+                "raw_weighted_payload_max_abs": float(summary.raw_weighted_payload_max_abs),
+                "effective_weighted_payload_max_abs": float(
+                    summary.effective_weighted_payload_max_abs
+                ),
+                "raw_max_component_value": float(summary.raw_max_component_value),
+                "clipped_max_component_value": float(summary.clipped_max_component_value),
+                "clipped_component_count": int(summary.clipped_component_count),
+                "total_component_count": int(summary.total_component_count),
+                "clipped_fraction": float(summary.clipped_fraction),
+                "total_clipping_l1": float(summary.total_clipping_l1),
+                "max_clipping_delta_abs": float(summary.max_clipping_delta_abs),
+            }
+        )
+    if not clipping_clients:
+        return None
+    return {
+        "applied_client_count": int(len(clipping_clients)),
+        "total_client_count": int(total_clients),
+        "max_raw_weighted_payload_abs": float(
+            max(item["raw_weighted_payload_max_abs"] for item in clipping_clients)
+        ),
+        "max_effective_weighted_payload_abs": float(
+            max(item["effective_weighted_payload_max_abs"] for item in clipping_clients)
+        ),
+        "total_clipped_components": int(
+            sum(item["clipped_component_count"] for item in clipping_clients)
+        ),
+        "total_components": int(
+            sum(item["total_component_count"] for item in clipping_clients)
+        ),
+        "total_clipping_l1": float(
+            sum(item["total_clipping_l1"] for item in clipping_clients)
+        ),
+        "clients": clipping_clients,
+    }
+
+
 def _build_secure_aggregator(
     training_config: FederatedTrainingConfig,
     *,
@@ -453,6 +512,7 @@ if fl is not None:
                 quantization_scale=self.training_config.secure_quantization_scale,
                 field_modulus=self.training_config.secure_field_modulus,
             )
+            clipping_report = _build_secure_clipping_report(results)
             secure_aggregator = self._secure_share_aggregator
             if secure_aggregator is None:
                 raise RuntimeError("Secure aggregation was requested but no aggregator is configured.")
@@ -481,6 +541,19 @@ if fl is not None:
                 self.training_config.secure_field_modulus,
                 "n/a" if max_abs_error is None else f"{max_abs_error:.6g}",
             )
+            if clipping_report is not None:
+                LOGGER.warning(
+                    "Round %s secure clipping summary applied_clients=%s/%s "
+                    "max_raw_weighted_abs=%.6g max_effective_weighted_abs=%.6g "
+                    "total_clipped_components=%s total_clipping_l1=%.6g",
+                    server_round,
+                    int(clipping_report["applied_client_count"]),
+                    int(clipping_report["total_client_count"]),
+                    float(clipping_report["max_raw_weighted_payload_abs"]),
+                    float(clipping_report["max_effective_weighted_payload_abs"]),
+                    int(clipping_report["total_clipped_components"]),
+                    float(clipping_report["total_clipping_l1"]),
+                )
             return aggregated, {
                 "mode": "secure",
                 "num_contributors": secure_result.num_contributors,
@@ -490,6 +563,7 @@ if fl is not None:
                 "requested_quantization_scale": self.training_config.secure_quantization_scale,
                 "max_component_l1": max_component_l1,
                 "max_abs_error": max_abs_error,
+                "clipping": clipping_report,
             }
 
         def _extract_shared_payload_from_fitres(self, fit_res: Any) -> list[np.ndarray]:

@@ -232,6 +232,8 @@ echo "  secure_reconstruction_threshold=${SECURE_RECONSTRUCTION_THRESHOLD:-3}"
 echo "  secure_field_modulus=${SECURE_FIELD_MODULUS:-3037000493}"
 echo "  secure_quantization_scale=${RESOLVED_SECURE_QUANTIZATION_SCALE}"
 echo "  secure_seed=${SECURE_SEED:-7}"
+echo "  secure_clip_weighted_payload=${SECURE_CLIP_WEIGHTED_PAYLOAD:-1}"
+echo "  secure_clip_budget_fraction=${SECURE_CLIP_BUDGET_FRACTION:-0.95}"
 echo "  clustered=${CLUSTERED_VALUE}"
 echo "  train_rounds=${TRAIN_ROUNDS}"
 echo "  train_epochs=${TRAIN_EPOCHS}"
@@ -293,6 +295,8 @@ TARGET_CMD=(
   SECURE_FIELD_MODULUS=${SECURE_FIELD_MODULUS:-3037000493}
   SECURE_QUANTIZATION_SCALE=${RESOLVED_SECURE_QUANTIZATION_SCALE}
   SECURE_SEED=${SECURE_SEED:-7}
+  SECURE_CLIP_WEIGHTED_PAYLOAD=${SECURE_CLIP_WEIGHTED_PAYLOAD:-1}
+  SECURE_CLIP_BUDGET_FRACTION=${SECURE_CLIP_BUDGET_FRACTION:-0.95}
   scripts/run_recommender_pipeline.sh
   "${RUN_ID}"
   "${SELECTION_ID}"

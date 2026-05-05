@@ -127,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--secure-field-modulus", type=int, default=2_147_483_647)
     train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
     train_parser.add_argument("--secure-seed", type=int, default=0)
+    train_parser.add_argument(
+        "--secure-clip-weighted-payload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Clip each client weighted secure payload to a safe per-client bound before quantization.",
+    )
+    train_parser.add_argument(
+        "--secure-clip-budget-fraction",
+        type=float,
+        default=0.95,
+        help="Fraction of the finite-field aggregate budget reserved for client-side secure payload clipping.",
+    )
     train_parser.add_argument("--run-id")
     train_parser.add_argument(
         "--partitions",
@@ -372,6 +384,18 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
     recommender_train_parser.add_argument("--secure-seed", type=int, default=0)
     recommender_train_parser.add_argument(
+        "--secure-clip-weighted-payload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Clip each client weighted secure payload to a safe per-client bound before quantization.",
+    )
+    recommender_train_parser.add_argument(
+        "--secure-clip-budget-fraction",
+        type=float,
+        default=0.95,
+        help="Fraction of the finite-field aggregate budget reserved for client-side secure payload clipping.",
+    )
+    recommender_train_parser.add_argument(
         "--clustered",
         action="store_true",
         help="Enable clustered recommender training with secure K-means and secure per-cluster aggregation.",
@@ -588,6 +612,8 @@ def main() -> None:
             secure_field_modulus=args.secure_field_modulus,
             secure_quantization_scale=args.secure_quantization_scale,
             secure_seed=args.secure_seed,
+            secure_clip_weighted_payload=args.secure_clip_weighted_payload,
+            secure_clip_budget_fraction=args.secure_clip_budget_fraction,
         )
         artifacts, summary = train_federated_from_partitions(
             config,
@@ -836,6 +862,8 @@ def main() -> None:
                 secure_field_modulus=args.secure_field_modulus,
                 secure_quantization_scale=args.secure_quantization_scale,
                 secure_seed=args.secure_seed,
+                secure_clip_weighted_payload=args.secure_clip_weighted_payload,
+                secure_clip_budget_fraction=args.secure_clip_budget_fraction,
                 clustering=RecommenderClusteringConfig(
                     enabled=bool(args.clustered),
                     method=args.clustering_method,

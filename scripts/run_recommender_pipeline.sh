@@ -49,6 +49,8 @@ Environment variables:
   SECURE_FIELD_MODULUS=2147483647       Secure aggregation field modulus.
   SECURE_QUANTIZATION_SCALE=8192        Secure aggregation quantization scale.
   SECURE_SEED=0                         Secure aggregation RNG seed.
+  SECURE_CLIP_WEIGHTED_PAYLOAD=1        Clip weighted secure payloads before quantization when set to 1.
+  SECURE_CLIP_BUDGET_FRACTION=0.95      Fraction of the aggregate field budget reserved for clipping.
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
   CLUSTERING_REPRESENTATION=model       Cluster either full local models or per-round deltas: model or delta.
@@ -136,6 +138,8 @@ SECURE_RECONSTRUCTION_THRESHOLD="${SECURE_RECONSTRUCTION_THRESHOLD:-}"
 SECURE_FIELD_MODULUS="${SECURE_FIELD_MODULUS:-2147483647}"
 SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-8192}"
 SECURE_SEED="${SECURE_SEED:-0}"
+SECURE_CLIP_WEIGHTED_PAYLOAD="${SECURE_CLIP_WEIGHTED_PAYLOAD:-1}"
+SECURE_CLIP_BUDGET_FRACTION="${SECURE_CLIP_BUDGET_FRACTION:-0.95}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
 CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
@@ -226,6 +230,12 @@ fi
 TRAIN_EXTRA+=(--secure-field-modulus "$SECURE_FIELD_MODULUS")
 TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
+if [[ "$SECURE_CLIP_WEIGHTED_PAYLOAD" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-secure-clip-weighted-payload)
+else
+  TRAIN_EXTRA+=(--secure-clip-weighted-payload)
+fi
+TRAIN_EXTRA+=(--secure-clip-budget-fraction "$SECURE_CLIP_BUDGET_FRACTION")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
 TRAIN_EXTRA+=(--clustering-representation "$CLUSTERING_REPRESENTATION")
 if [[ "$CLUSTERING_NORMALIZE_VECTOR" == "0" ]]; then
