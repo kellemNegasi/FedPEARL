@@ -77,3 +77,13 @@ def test_dataset_registry_extensibility(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(ValueError):
         registry.register(spec)
+
+
+
+def test_default_dataset_registry_includes_large_adult_dataset() -> None:
+    from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
+
+    spec = DEFAULT_DATASET_REGISTRY.get("adult_income_large")
+
+    assert spec.openml_data_id == 4535
+    assert "224k" in spec.description

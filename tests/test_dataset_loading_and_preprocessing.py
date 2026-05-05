@@ -10,7 +10,7 @@ from fed_perso_xai.data.preprocessing import FrozenTabularPreprocessor
 from fed_perso_xai.utils.config import PreprocessingConfig
 
 
-@pytest.mark.parametrize("dataset_name", ["adult_income", "bank_marketing"])
+@pytest.mark.parametrize("dataset_name", ["adult_income", "adult_income_large", "bank_marketing"])
 def test_supported_dataset_loading_smoke(mock_openml, tmp_path, dataset_name: str) -> None:
     frame = mock_openml(dataset_name)
     dataset = load_supported_dataset(dataset_name, cache_dir=tmp_path / "cache")

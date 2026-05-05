@@ -103,6 +103,17 @@ DEFAULT_DATASET_REGISTRY = DatasetRegistry(
             cleaning_hook=_replace_common_missing_tokens,
             description="OpenML Bank Marketing binary classification benchmark.",
         ),
+        DatasetSpec(
+            key="adult_income_large",
+            display_name="Adult Income Large",
+            openml_data_id=4535,
+            target_transform=_adult_income_transform,
+            cleaning_hook=_replace_common_missing_tokens,
+            description=(
+                "OpenML Census-Income / Adult-style binary classification benchmark "
+                "(data_id=4535, about 224k rows)."
+            ),
+        ),
     ]
 )
 

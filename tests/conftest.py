@@ -16,7 +16,7 @@ if str(LCC_SRC) not in sys.path:
 
 
 def _build_mock_frame(dataset_name: str) -> tuple[pd.DataFrame, str]:
-    if dataset_name == "adult_income":
+    if dataset_name in {"adult_income", "adult_income_large"}:
         target_column = "class"
         frame = pd.DataFrame(
             {
@@ -67,7 +67,7 @@ def _build_mock_frame(dataset_name: str) -> tuple[pd.DataFrame, str]:
                     "<=50K",
                 ],
             },
-            index=[f"adult-{idx}" for idx in range(12)],
+            index=[f"{dataset_name}-adult-{idx}" for idx in range(12)],
         )
         return frame, target_column
 
