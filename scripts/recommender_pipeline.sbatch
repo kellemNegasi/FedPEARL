@@ -199,6 +199,18 @@ case "${MODE_RAW,,}" in
     ;;
 esac
 
+if [[ -n "${SECURE_QUANTIZATION_SCALE:-}" ]]; then
+  RESOLVED_SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE}"
+elif [[ "${MODE_VALUE}" == "clustered" ]]; then
+  # 15-client clustered recommender runs overflowed at 4096 with max_safe_scale
+  # only slightly below it; use a lower default to leave margin.
+  RESOLVED_SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE_CLUSTERED:-3072}"
+else
+  # Non-clustered recommender secure aggregation weights updates by num_examples.
+  # 65536 overflowed current 10-client adult_income runs; 8192 leaves headroom.
+  RESOLVED_SECURE_QUANTIZATION_SCALE=8192
+fi
+
 # Workload ---------------------------------------------------------------------
 echo "[$(date --iso-8601=seconds)] Starting recommender pipeline job"
 echo "  project_root=${PROJECT_ROOT}"
@@ -218,7 +230,7 @@ echo "  secure_num_helpers=${SECURE_NUM_HELPERS:-15}"
 echo "  secure_privacy_threshold=${SECURE_PRIVACY_THRESHOLD:-2}"
 echo "  secure_reconstruction_threshold=${SECURE_RECONSTRUCTION_THRESHOLD:-3}"
 echo "  secure_field_modulus=${SECURE_FIELD_MODULUS:-3037000493}"
-echo "  secure_quantization_scale=${SECURE_QUANTIZATION_SCALE:-65536}"
+echo "  secure_quantization_scale=${RESOLVED_SECURE_QUANTIZATION_SCALE}"
 echo "  secure_seed=${SECURE_SEED:-7}"
 echo "  clustered=${CLUSTERED_VALUE}"
 echo "  train_rounds=${TRAIN_ROUNDS}"
@@ -279,7 +291,7 @@ TARGET_CMD=(
   SECURE_PRIVACY_THRESHOLD=${SECURE_PRIVACY_THRESHOLD:-2}
   SECURE_RECONSTRUCTION_THRESHOLD=${SECURE_RECONSTRUCTION_THRESHOLD:-3}
   SECURE_FIELD_MODULUS=${SECURE_FIELD_MODULUS:-3037000493}
-  SECURE_QUANTIZATION_SCALE=${SECURE_QUANTIZATION_SCALE:-65536}
+  SECURE_QUANTIZATION_SCALE=${RESOLVED_SECURE_QUANTIZATION_SCALE}
   SECURE_SEED=${SECURE_SEED:-7}
   scripts/run_recommender_pipeline.sh
   "${RUN_ID}"

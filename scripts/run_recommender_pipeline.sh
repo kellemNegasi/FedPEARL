@@ -47,7 +47,7 @@ Environment variables:
   SECURE_PRIVACY_THRESHOLD=2            Secure aggregation privacy threshold.
   SECURE_RECONSTRUCTION_THRESHOLD=      Optional secure aggregation reconstruction threshold.
   SECURE_FIELD_MODULUS=2147483647       Secure aggregation field modulus.
-  SECURE_QUANTIZATION_SCALE=65536       Secure aggregation quantization scale.
+  SECURE_QUANTIZATION_SCALE=8192        Secure aggregation quantization scale.
   SECURE_SEED=0                         Secure aggregation RNG seed.
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
@@ -134,7 +134,7 @@ SECURE_NUM_HELPERS="${SECURE_NUM_HELPERS:-5}"
 SECURE_PRIVACY_THRESHOLD="${SECURE_PRIVACY_THRESHOLD:-2}"
 SECURE_RECONSTRUCTION_THRESHOLD="${SECURE_RECONSTRUCTION_THRESHOLD:-}"
 SECURE_FIELD_MODULUS="${SECURE_FIELD_MODULUS:-2147483647}"
-SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-65536}"
+SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-8192}"
 SECURE_SEED="${SECURE_SEED:-0}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"

@@ -995,10 +995,14 @@ def _validate_cluster_encoded_aggregate_bound(
     total_max_abs_bound = float(sum(weighted_payload_bounds))
     signed_bound = (field_modulus - 1) // 2
     if total_max_abs_bound * float(quantization_scale) > float(signed_bound):
+        max_safe_scale = int(signed_bound // total_max_abs_bound) if total_max_abs_bound > 0.0 else int(
+            quantization_scale
+        )
         raise ValueError(
             "Secure aggregation aggregate may overflow the finite field under the current "
             f"bound estimate (sum_client_max_abs={total_max_abs_bound:.6g}, "
-            f"scale={quantization_scale}, signed_bound={signed_bound})."
+            f"scale={quantization_scale}, signed_bound={signed_bound}, "
+            f"max_safe_scale={max_safe_scale})."
         )
     return total_max_abs_bound
 
