@@ -69,7 +69,7 @@ CLUSTERING_ENABLE_PCA_ARG="${6:-}"
 case "${MODE_ARG,,}" in
   "")
     SUBMISSION_MODES=(
-      # "plain"
+      "plain"
       "secure"
     )
     ;;
