@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import itertools
+import json
 import re
 import subprocess
+from hashlib import sha256
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +17,6 @@ import yaml
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.explain_eval import plan_explain_eval_jobs
 from fed_perso_xai.orchestration.federated_training import (
-    load_completed_federated_training_run,
     train_federated_from_partitions,
 )
 from fed_perso_xai.utils.config import (
@@ -114,34 +116,18 @@ def run_job_launcher(
             paths=paths,
             experiment=experiment,
         )
-        existing_training = None
-        if not should_force_training:
-            existing_training = load_completed_federated_training_run(
-                paths=paths,
-                dataset_name=experiment.dataset_name,
-                num_clients=experiment.num_clients,
-                alpha=experiment.alpha,
-                seed=experiment.seed,
-            )
-
-        if existing_training is not None:
-            training_artifacts, existing_summary = existing_training
-            training_summary = dict(existing_summary)
-            training_summary["status"] = "reused_existing"
-            training_summary["skipped"] = True
-        else:
-            training_artifacts, training_summary = train_federated_from_partitions(
-                training_config,
-                run_id=_render_run_id(raw_config.get("run_id_template"), experiment),
-                partition_data_root=partition_root(
-                    paths.partition_root,
-                    experiment.dataset_name,
-                    experiment.num_clients,
-                    experiment.alpha,
-                    experiment.seed,
-                ),
-                force=should_force_training,
-            )
+        training_artifacts, training_summary = train_federated_from_partitions(
+            training_config,
+            run_id=_render_run_id(raw_config.get("run_id_template"), experiment),
+            partition_data_root=partition_root(
+                paths.partition_root,
+                experiment.dataset_name,
+                experiment.num_clients,
+                experiment.alpha,
+                experiment.seed,
+            ),
+            force=should_force_training,
+        )
         run_id = str(training_summary["run_id"])
         run_record.update(
             {
@@ -152,6 +138,12 @@ def run_job_launcher(
         )
 
         if bool(explain_cfg.get("enabled", True)):
+            plan_warnings = _handle_matching_plan_outputs(
+                explain_cfg=explain_cfg,
+                experiment=experiment,
+            )
+            if plan_warnings:
+                run_record["warnings"] = list(plan_warnings)
             plan_path = _plan_path(
                 explain_cfg=explain_cfg,
                 experiment=experiment,
@@ -466,13 +458,8 @@ def _build_training_config(
 
 def _plan_path(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment, run_id: str) -> Path:
     plan_dir = Path(str(explain_cfg.get("plan_dir", "job_launcher/plans")))
-    safe_run_id = _safe_segment(run_id)
-    filename = (
-        f"{experiment.dataset_name}__clients-{experiment.num_clients}"
-        f"__alpha-{experiment.alpha}__seed-{experiment.seed}"
-        f"__{experiment.model_label}__{safe_run_id}.jsonl"
-    )
-    return plan_dir / filename
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    return plan_dir / f"{_plan_stem(explain_cfg=explain_cfg, experiment=experiment)}__{_safe_segment(run_id)}.jsonl"
 
 
 def _write_slurm_array_script(
@@ -484,7 +471,7 @@ def _write_slurm_array_script(
 ) -> Path:
     script_dir = Path(str(slurm_cfg.get("script_dir", "job_launcher/slurm")))
     script_dir.mkdir(parents=True, exist_ok=True)
-    script_path = script_dir / f"explain_eval__{_safe_segment(run_id)}.sbatch"
+    script_path = script_dir / f"{plan_path.stem}.sbatch"
     concurrency = slurm_cfg.get("array_concurrency")
     array_spec = f"{array_range}%{int(concurrency)}" if concurrency else array_range
     job_name = str(slurm_cfg.get("job_name", "explain-eval"))
@@ -665,6 +652,69 @@ def _render_run_id(template: Any, experiment: LauncherExperiment) -> str | None:
         strategy=experiment.strategy_name,
         simulation_backend=experiment.simulation_backend,
     )
+
+
+def _explain_plan_signature(*, explain_cfg: dict[str, Any]) -> str:
+    plan_identity = {
+        "clients": str(explain_cfg.get("clients", "all")),
+        "split": str(explain_cfg.get("split", "test")),
+        "explainers": _selector_csv(explain_cfg.get("explainers"), default="all"),
+        "configs": _selector_csv(explain_cfg.get("configs"), default="all"),
+        "max_instances": int(explain_cfg.get("max_instances", 50)),
+        "rows_per_shard": int(explain_cfg.get("rows_per_shard", 1024)),
+        "random_state": int(explain_cfg.get("random_state", 42)),
+        "skip_existing": bool(explain_cfg.get("skip_existing", False)),
+        "force": bool(explain_cfg.get("force", False)),
+    }
+    payload = json.dumps(plan_identity, sort_keys=True, separators=(",", ":"))
+    return sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _plan_stem(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment) -> str:
+    plan_signature = _explain_plan_signature(explain_cfg=explain_cfg)
+    return (
+        f"{experiment.dataset_name}__clients-{experiment.num_clients}"
+        f"__alpha-{experiment.alpha}__seed-{experiment.seed}"
+        f"__{experiment.model_label}__plan-{plan_signature}"
+    )
+
+
+def _handle_matching_plan_outputs(
+    *,
+    explain_cfg: dict[str, Any],
+    experiment: LauncherExperiment,
+) -> list[str]:
+    plan_dir = Path(str(explain_cfg.get("plan_dir", "job_launcher/plans")))
+    script_dir = Path(str((explain_cfg.get("slurm") or {}).get("script_dir", "job_launcher/slurm")))
+    plan_stem = _plan_stem(explain_cfg=explain_cfg, experiment=experiment)
+    matching_plans = sorted(plan_dir.glob(f"{plan_stem}__*.jsonl"))
+    matching_scripts = sorted(script_dir.glob(f"{plan_stem}__*.sbatch"))
+    if not matching_plans and not matching_scripts:
+        return []
+
+    overwrite_matching = bool(explain_cfg.get("overwrite_matching_plans", False))
+    message = (
+        "Found existing explain/eval launcher outputs for the same configuration "
+        f"({len(matching_plans)} plan(s), {len(matching_scripts)} script(s)) under stem '{plan_stem}'."
+    )
+    if overwrite_matching:
+        for path in [*matching_plans, *matching_scripts]:
+            path.unlink(missing_ok=True)
+        return [message + " Removed older matching outputs because explain_eval.overwrite_matching_plans=true."]
+
+    if bool(explain_cfg.get("warn_existing_plans", True)):
+        warnings.warn(
+            message
+            + " Writing a new timestamped plan alongside them. "
+            "Set explain_eval.overwrite_matching_plans=true to replace older matching outputs.",
+            stacklevel=2,
+        )
+        return [
+            message
+            + " Wrote a new timestamped plan alongside them. "
+            "Set explain_eval.overwrite_matching_plans=true to replace older matching outputs."
+        ]
+    return []
 
 
 def _as_list(value: Any) -> list[Any]:

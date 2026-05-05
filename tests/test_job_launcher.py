@@ -93,6 +93,124 @@ def test_job_launcher_dry_run_expands_yaml_matrix(tmp_path) -> None:
     assert {run["dry_run"] for run in summary["runs"]} == {True}
 
 
+def test_job_launcher_plan_path_keeps_timestamped_run_id(tmp_path) -> None:
+    config_path = _write_launcher_config(tmp_path)
+    raw_config = job_launcher._load_launcher_yaml(config_path)
+    experiment = job_launcher._expand_experiments(raw_config)[0]
+    explain_cfg = raw_config["explain_eval"]
+
+    first = job_launcher._plan_path(
+        explain_cfg=explain_cfg,
+        experiment=experiment,
+        run_id="run-a",
+    )
+    second = job_launcher._plan_path(
+        explain_cfg=explain_cfg,
+        experiment=experiment,
+        run_id="run-b",
+    )
+
+    assert first != second
+    assert "plan-" in first.name
+    assert "run-a" in first.name
+    assert "run-b" in second.name
+
+
+def test_job_launcher_plan_path_changes_when_explain_settings_change(tmp_path) -> None:
+    config_path = _write_launcher_config(tmp_path)
+    raw_config = job_launcher._load_launcher_yaml(config_path)
+    experiment = job_launcher._expand_experiments(raw_config)[0]
+    explain_cfg = dict(raw_config["explain_eval"])
+
+    first = job_launcher._plan_path(
+        explain_cfg=explain_cfg,
+        experiment=experiment,
+        run_id="run-a",
+    )
+    second = job_launcher._plan_path(
+        explain_cfg={**explain_cfg, "max_instances": 99},
+        experiment=experiment,
+        run_id="run-a",
+    )
+
+    assert first != second
+
+
+def test_job_launcher_warns_when_matching_plan_outputs_exist(tmp_path) -> None:
+    config_path = _write_launcher_config(tmp_path)
+    raw_config = job_launcher._load_launcher_yaml(config_path)
+    experiment = job_launcher._expand_experiments(raw_config)[0]
+    explain_cfg = raw_config["explain_eval"]
+    stem = job_launcher._plan_stem(explain_cfg=explain_cfg, experiment=experiment)
+    plan_dir = Path(explain_cfg["plan_dir"])
+    script_dir = Path(explain_cfg["slurm"]["script_dir"])
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    script_dir.mkdir(parents=True, exist_ok=True)
+    (plan_dir / f"{stem}__old-run.jsonl").write_text("{}", encoding="utf-8")
+    (script_dir / f"{stem}__old-run.sbatch").write_text("#!/bin/bash\n", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="Found existing explain/eval launcher outputs"):
+        messages = job_launcher._handle_matching_plan_outputs(
+            explain_cfg=explain_cfg,
+            experiment=experiment,
+        )
+
+    assert len(messages) == 1
+    assert "alongside" in messages[0]
+    assert (plan_dir / f"{stem}__old-run.jsonl").exists()
+    assert (script_dir / f"{stem}__old-run.sbatch").exists()
+
+
+def test_job_launcher_can_overwrite_matching_plan_outputs(tmp_path) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={
+            "explain_eval": {
+                "enabled": True,
+                "clients": "all",
+                "split": "test",
+                "explainers": "lime",
+                "configs": "lime__kernel-1.5__samples-50",
+                "max_instances": 5,
+                "random_state": 11,
+                "skip_existing": True,
+                "overwrite_matching_plans": True,
+                "plan_dir": str(tmp_path / "plans"),
+                "slurm": {
+                    "enabled": True,
+                    "submit": False,
+                    "script_dir": str(tmp_path / "slurm"),
+                    "job_name": "xai-test",
+                    "array_concurrency": 2,
+                    "sbatch_args": ["--cpus-per-task=1", "--mem=1G"],
+                },
+            }
+        },
+    )
+    raw_config = job_launcher._load_launcher_yaml(config_path)
+    experiment = job_launcher._expand_experiments(raw_config)[0]
+    explain_cfg = raw_config["explain_eval"]
+    stem = job_launcher._plan_stem(explain_cfg=explain_cfg, experiment=experiment)
+    plan_dir = Path(explain_cfg["plan_dir"])
+    script_dir = Path(explain_cfg["slurm"]["script_dir"])
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    script_dir.mkdir(parents=True, exist_ok=True)
+    old_plan = plan_dir / f"{stem}__old-run.jsonl"
+    old_script = script_dir / f"{stem}__old-run.sbatch"
+    old_plan.write_text("{}", encoding="utf-8")
+    old_script.write_text("#!/bin/bash\n", encoding="utf-8")
+
+    messages = job_launcher._handle_matching_plan_outputs(
+        explain_cfg=explain_cfg,
+        experiment=experiment,
+    )
+
+    assert len(messages) == 1
+    assert "Removed older matching outputs" in messages[0]
+    assert not old_plan.exists()
+    assert not old_script.exists()
+
+
 def test_job_launcher_rejects_list_valued_training_sampling_fields(tmp_path) -> None:
     config_path = _write_launcher_config(
         tmp_path,
@@ -395,6 +513,46 @@ def test_job_launcher_force_training_override_takes_precedence(tmp_path, monkeyp
 
     assert summary["status"] == "completed"
     assert calls["force"] is True
+
+
+def test_job_launcher_does_not_bypass_training_input_mismatch_checks(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={"explain_eval": {"enabled": False}},
+    )
+    calls: dict[str, object] = {"train_calls": 0}
+
+    def fake_prepare(config):
+        root = tmp_path / "datasets" / "toy" / "3_clients" / "alpha_1.0" / "seed_7"
+        root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(federated_artifacts=SimpleNamespace(root_dir=root))
+
+    def fake_load_completed(*, paths, dataset_name, num_clients, alpha, seed):
+        calls["load_completed_called"] = True
+        return SimpleNamespace(run_dir=tmp_path / "federated_run"), {
+            "status": "completed",
+            "run_id": "stale-run",
+        }
+
+    def fake_train(config, *, run_id=None, partition_data_root=None, force=False):
+        calls["train_calls"] = int(calls["train_calls"]) + 1
+        raise FileExistsError("different inputs (training_config_sha256)")
+
+    monkeypatch.setattr(job_launcher, "prepare_federated_dataset", fake_prepare)
+    monkeypatch.setattr(
+        job_launcher,
+        "load_completed_federated_training_run",
+        fake_load_completed,
+        raising=False,
+    )
+    monkeypatch.setattr(job_launcher, "train_federated_from_partitions", fake_train)
+
+    with pytest.raises(FileExistsError, match="training_config_sha256"):
+        run_job_launcher(config_path=config_path)
+
+    assert calls["train_calls"] == 1
 
 
 def test_launch_experiment_jobs_cli_uses_launcher(tmp_path, monkeypatch, capsys) -> None:
