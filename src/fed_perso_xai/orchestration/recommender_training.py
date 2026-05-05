@@ -113,20 +113,14 @@ def train_federated_recommender(
             split_name=monitor_split_name,
         )
     except FileNotFoundError:
-        monitor_split_name = "test"
-        try:
-            loaded_eval_clients = _load_client_recommender_inputs(
-                run_artifact_dir=run_context.run_artifact_dir,
-                selection_id=config.selection_id,
-                persona=config.persona,
-                clients=config.clients,
-                context_filename=config.context_filename,
-                label_filename=config.label_filename,
-                feature_columns=feature_columns,
-                split_name=monitor_split_name,
-            )
-        except FileNotFoundError:
-            loaded_eval_clients = []
+        LOGGER.warning(
+            "Skipping recommender evaluation for run_id=%s selection_id=%s persona=%s: "
+            "no validation split was found.",
+            config.run_id,
+            config.selection_id,
+            config.persona,
+        )
+        loaded_eval_clients = []
     eval_lookup = {str(item["client_id"]): item for item in loaded_eval_clients}
     missing_eval_clients = sorted(
         str(item["client_id"])
@@ -136,6 +130,7 @@ def train_federated_recommender(
     model_config = PairwiseLogisticConfig(
         epochs=config.epochs,
         batch_size=config.batch_size,
+        optimizer=config.optimizer,
         learning_rate=config.learning_rate,
         l2_regularization=config.l2_regularization,
         svm_c=config.svm_c,
@@ -256,8 +251,15 @@ def train_federated_recommender(
                 clustered=False,
             )
     else:
+        LOGGER.warning(
+            "Recommender evaluation skipped for run_id=%s selection_id=%s persona=%s: "
+            "no validation evaluation pairs were available.",
+            config.run_id,
+            config.selection_id,
+            config.persona,
+        )
         evaluation = {
-            "status": "skipped_no_test_pairs",
+            "status": "skipped_no_validation_pairs",
             "run_id": config.run_id,
             "selection_id": config.selection_id,
             "persona": config.persona,
@@ -269,7 +271,7 @@ def train_federated_recommender(
             "generated_at": current_utc_timestamp(),
             "aggregate": {},
             "clients": [],
-            "reason": "No held-out recommender evaluation pairs were available for any client.",
+            "reason": "No validation recommender evaluation pairs were available for any client.",
         }
         _write_json_atomic(artifacts.evaluation_summary_path, evaluation)
 

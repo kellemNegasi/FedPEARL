@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_RECOMMENDER_OPTIMIZER = "sgd"
 DEFAULT_RECOMMENDER_TYPE = "svm_rank"
 _SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
+_SUPPORTED_RECOMMENDER_OPTIMIZERS = ("sgd", "adagrad", "adam")
 _SUPPORTED_RECOMMENDER_CLUSTERING_METHODS = ("secure_kmeans",)
 _SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS = ("model", "delta")
 _SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES = ("l2",)
@@ -20,6 +22,16 @@ def _normalize_recommender_type(recommender_type: str) -> str:
         supported = ", ".join(_SUPPORTED_RECOMMENDER_TYPES)
         raise ValueError(
             f"Unsupported recommender_type {recommender_type!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
+def _normalize_recommender_optimizer(optimizer: str) -> str:
+    normalized = str(optimizer).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_OPTIMIZERS:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_OPTIMIZERS)
+        raise ValueError(
+            f"Unsupported optimizer {optimizer!r}. Supported values: {supported}."
         )
     return normalized
 
@@ -277,6 +289,7 @@ class RecommenderFederatedTrainingConfig:
     ray_num_cpus: int = 4
     epochs: int = 5
     batch_size: int = 64
+    optimizer: str = DEFAULT_RECOMMENDER_OPTIMIZER
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
     svm_c: float = 1.0
@@ -316,6 +329,7 @@ class RecommenderFederatedTrainingConfig:
         _require_integer_at_least("ray_num_cpus", self.ray_num_cpus, minimum=1)
         _require_integer_at_least("epochs", self.epochs, minimum=1)
         _require_integer_at_least("batch_size", self.batch_size, minimum=1)
+        _normalize_recommender_optimizer(self.optimizer)
         _require_positive("learning_rate", self.learning_rate)
         _require_non_negative("l2_regularization", self.l2_regularization)
         _require_positive("svm_c", self.svm_c)
@@ -405,6 +419,7 @@ class RecommenderFederatedTrainingConfig:
             ray_num_cpus=self.ray_num_cpus,
             epochs=self.epochs,
             batch_size=self.batch_size,
+            optimizer=self.optimizer,
             learning_rate=self.learning_rate,
             l2_regularization=self.l2_regularization,
             svm_c=self.svm_c,

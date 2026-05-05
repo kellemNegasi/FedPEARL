@@ -11,7 +11,9 @@ import pandas as pd
 
 
 DEFAULT_RECOMMENDER_TYPE = "svm_rank"
+DEFAULT_RECOMMENDER_OPTIMIZER = "sgd"
 SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
+SUPPORTED_RECOMMENDER_OPTIMIZERS = ("sgd", "adagrad", "adam")
 _ARTIFACT_MODEL_TYPE_BY_RECOMMENDER = {
     "svm_rank": "svm_rank_recommender",
     "pairwise_logistic": "pairwise_logistic_recommender",
@@ -40,6 +42,18 @@ def recommender_artifact_model_type(recommender_type: str) -> str:
     return _ARTIFACT_MODEL_TYPE_BY_RECOMMENDER[normalize_recommender_type(recommender_type)]
 
 
+def normalize_recommender_optimizer(optimizer: str) -> str:
+    """Validate and normalize a user-facing local optimizer key."""
+
+    normalized = str(optimizer).strip().lower()
+    if normalized not in SUPPORTED_RECOMMENDER_OPTIMIZERS:
+        supported = ", ".join(SUPPORTED_RECOMMENDER_OPTIMIZERS)
+        raise ValueError(
+            f"Unsupported optimizer {optimizer!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
 def initialize_recommender_parameters(
     n_features: int,
     recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
@@ -59,6 +73,7 @@ class PairwiseLogisticConfig:
 
     epochs: int = 5
     batch_size: int = 64
+    optimizer: str = DEFAULT_RECOMMENDER_OPTIMIZER
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
     svm_c: float = 1.0
@@ -69,6 +84,7 @@ class PairwiseLogisticConfig:
             raise ValueError("epochs must be >= 1.")
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1.")
+        normalize_recommender_optimizer(self.optimizer)
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be > 0.")
         if self.l2_regularization < 0:
@@ -95,6 +111,7 @@ class PairwiseLogisticRecommender:
     """
 
     n_features: int
+    optimizer: str
     learning_rate: float
     batch_size: int
     local_epochs: int
@@ -115,6 +132,7 @@ class PairwiseLogisticRecommender:
 
         return cls(
             n_features=n_features,
+            optimizer=config.optimizer,
             learning_rate=config.learning_rate,
             batch_size=config.batch_size,
             local_epochs=config.epochs,
@@ -151,6 +169,11 @@ class PairwiseLogisticRecommender:
 
         rng = np.random.default_rng(seed)
         batch_size = max(1, min(self.batch_size, X.shape[0]))
+        optimizer = _create_optimizer(
+            optimizer=self.optimizer,
+            learning_rate=self.learning_rate,
+            parameters=self.get_parameters(),
+        )
         for _ in range(self.local_epochs):
             indices = rng.permutation(X.shape[0])
             for start in range(0, X.shape[0], batch_size):
@@ -162,8 +185,8 @@ class PairwiseLogisticRecommender:
                 grad_w = (X_batch.T @ errors) / X_batch.shape[0]
                 grad_w += self.l2_regularization * self.weights
                 grad_b = float(np.mean(errors))
-                self.weights -= self.learning_rate * grad_w
-                self.bias[0] -= self.learning_rate * grad_b
+                updated = optimizer.step([grad_w, np.asarray([grad_b], dtype=np.float64)])
+                self.set_parameters(updated)
         return self.loss(X, y)
 
     def predict_pairwise_logits(self, X: np.ndarray) -> np.ndarray:
@@ -226,6 +249,7 @@ class PairwiseLogisticRecommender:
             weights=self.weights.astype(np.float64, copy=False),
             bias=self.bias.astype(np.float64, copy=False),
             n_features=np.asarray([self.n_features], dtype=np.int64),
+            optimizer=np.asarray([self.optimizer]),
             learning_rate=np.asarray([self.learning_rate], dtype=np.float64),
             batch_size=np.asarray([self.batch_size], dtype=np.int64),
             local_epochs=np.asarray([self.local_epochs], dtype=np.int64),
@@ -247,6 +271,7 @@ class SVMRankRecommender:
     """
 
     n_features: int
+    optimizer: str
     learning_rate: float
     batch_size: int
     local_epochs: int
@@ -266,6 +291,7 @@ class SVMRankRecommender:
     ) -> "SVMRankRecommender":
         return cls(
             n_features=n_features,
+            optimizer=config.optimizer,
             learning_rate=config.learning_rate,
             batch_size=config.batch_size,
             local_epochs=config.epochs,
@@ -314,6 +340,11 @@ class SVMRankRecommender:
         rng = np.random.default_rng(seed)
         sample_count = float(X.shape[0])
         batch_size = max(1, min(self.batch_size, X.shape[0]))
+        optimizer = _create_optimizer(
+            optimizer=self.optimizer,
+            learning_rate=self.learning_rate,
+            parameters=self.get_parameters(),
+        )
         for _ in range(self.local_epochs):
             indices = rng.permutation(X.shape[0])
             for start in range(0, X.shape[0], batch_size):
@@ -337,8 +368,8 @@ class SVMRankRecommender:
                     grad_b -= 2.0 * self.svm_c * (
                         float(np.sum(signed_deficits)) / batch_denominator
                     )
-                self.weights -= self.learning_rate * grad_w
-                self.bias[0] -= self.learning_rate * grad_b
+                updated = optimizer.step([grad_w, np.asarray([grad_b], dtype=np.float64)])
+                self.set_parameters(updated)
         return self.loss(X, y)
 
     def predict_pairwise_logits(self, X: np.ndarray) -> np.ndarray:
@@ -389,6 +420,7 @@ class SVMRankRecommender:
             weights=self.weights.astype(np.float64, copy=False),
             bias=self.bias.astype(np.float64, copy=False),
             n_features=np.asarray([self.n_features], dtype=np.int64),
+            optimizer=np.asarray([self.optimizer]),
             learning_rate=np.asarray([self.learning_rate], dtype=np.float64),
             batch_size=np.asarray([self.batch_size], dtype=np.int64),
             local_epochs=np.asarray([self.local_epochs], dtype=np.int64),
@@ -453,6 +485,78 @@ def _as_binary_labels(y: np.ndarray) -> np.ndarray:
     return arr
 
 
+class _ParameterOptimizer:
+    """Small stateful optimizer over the shared recommender parameter tensors."""
+
+    def __init__(
+        self,
+        *,
+        optimizer: str,
+        learning_rate: float,
+        parameters: Sequence[np.ndarray],
+        epsilon: float = 1e-8,
+        beta1: float = 0.9,
+        beta2: float = 0.999,
+    ) -> None:
+        self.optimizer = normalize_recommender_optimizer(optimizer)
+        self.learning_rate = float(learning_rate)
+        self.epsilon = float(epsilon)
+        self.beta1 = float(beta1)
+        self.beta2 = float(beta2)
+        self.parameters = [np.asarray(parameter, dtype=np.float64).copy() for parameter in parameters]
+        self.accumulators = [np.zeros_like(parameter) for parameter in self.parameters]
+        self.first_moments = [np.zeros_like(parameter) for parameter in self.parameters]
+        self.second_moments = [np.zeros_like(parameter) for parameter in self.parameters]
+        self.step_index = 0
+
+    def step(self, gradients: Sequence[np.ndarray]) -> list[np.ndarray]:
+        if len(gradients) != len(self.parameters):
+            raise ValueError("gradients must align with optimizer parameters.")
+        normalized_gradients = [
+            np.asarray(gradient, dtype=np.float64).copy() for gradient in gradients
+        ]
+        self.step_index += 1
+        if self.optimizer == "sgd":
+            for index, gradient in enumerate(normalized_gradients):
+                self.parameters[index] -= self.learning_rate * gradient
+            return [parameter.copy() for parameter in self.parameters]
+        if self.optimizer == "adagrad":
+            for index, gradient in enumerate(normalized_gradients):
+                self.accumulators[index] += np.square(gradient)
+                adjusted_lr = self.learning_rate / (
+                    np.sqrt(self.accumulators[index]) + self.epsilon
+                )
+                self.parameters[index] -= adjusted_lr * gradient
+            return [parameter.copy() for parameter in self.parameters]
+        for index, gradient in enumerate(normalized_gradients):
+            self.first_moments[index] = (
+                self.beta1 * self.first_moments[index] + (1.0 - self.beta1) * gradient
+            )
+            self.second_moments[index] = (
+                self.beta2 * self.second_moments[index]
+                + (1.0 - self.beta2) * np.square(gradient)
+            )
+            first_hat = self.first_moments[index] / (1.0 - self.beta1**self.step_index)
+            second_hat = self.second_moments[index] / (1.0 - self.beta2**self.step_index)
+            self.parameters[index] -= self.learning_rate * first_hat / (
+                np.sqrt(second_hat) + self.epsilon
+            )
+        return [parameter.copy() for parameter in self.parameters]
+
+
+def _create_optimizer(
+    *,
+    optimizer: str,
+    learning_rate: float,
+    parameters: Sequence[np.ndarray],
+) -> _ParameterOptimizer:
+    return _ParameterOptimizer(
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        parameters=parameters,
+    )
+
+
 def load_pairwise_logistic_recommender(path: Path) -> PairwiseLogisticRecommender:
     """Load a persisted pairwise logistic recommender."""
 
@@ -497,6 +601,11 @@ def _config_from_bundle(bundle: np.lib.npyio.NpzFile) -> PairwiseLogisticConfig:
     return PairwiseLogisticConfig(
         epochs=int(np.asarray(bundle["local_epochs"]).reshape(-1)[0]),
         batch_size=int(np.asarray(bundle["batch_size"]).reshape(-1)[0]),
+        optimizer=str(
+            np.asarray(
+                bundle.get("optimizer", np.asarray([DEFAULT_RECOMMENDER_OPTIMIZER]))
+            ).reshape(-1)[0]
+        ),
         learning_rate=float(np.asarray(bundle["learning_rate"]).reshape(-1)[0]),
         l2_regularization=float(
             np.asarray(bundle.get("l2_regularization", np.asarray([0.0]))).reshape(-1)[0]

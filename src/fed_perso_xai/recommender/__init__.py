@@ -8,7 +8,9 @@ from fed_perso_xai.recommender.data import (
     split_recommender_instance_ids,
 )
 from fed_perso_xai.recommender.model import (
+    DEFAULT_RECOMMENDER_OPTIMIZER,
     DEFAULT_RECOMMENDER_TYPE,
+    SUPPORTED_RECOMMENDER_OPTIMIZERS,
     SUPPORTED_RECOMMENDER_TYPES,
     PairwiseLogisticConfig,
     PairwiseLogisticRecommender,
@@ -19,6 +21,7 @@ from fed_perso_xai.recommender.model import (
     load_pairwise_logistic_recommender,
     load_recommender,
     load_svm_rank_recommender,
+    normalize_recommender_optimizer,
     normalize_recommender_type,
     recommender_artifact_model_type,
 )
@@ -39,6 +42,7 @@ from fed_perso_xai.recommender.user_simulation import (
 )
 
 __all__ = [
+    "DEFAULT_RECOMMENDER_OPTIMIZER",
     "DEFAULT_RECOMMENDER_TYPE",
     "DEFAULT_USER_SIMULATOR_REGISTRY",
     "DirichletPersonaSimulator",
@@ -49,6 +53,7 @@ __all__ = [
     "PairwiseRecommenderModel",
     "PersonaConfig",
     "RecommenderInstanceSplit",
+    "SUPPORTED_RECOMMENDER_OPTIMIZERS",
     "SUPPORTED_RECOMMENDER_TYPES",
     "SVMRankRecommender",
     "UserSimulator",
@@ -65,6 +70,7 @@ __all__ = [
     "load_persona_config",
     "load_recommender",
     "load_svm_rank_recommender",
+    "normalize_recommender_optimizer",
     "normalize_recommender_type",
     "recommender_artifact_model_type",
     "split_recommender_instance_ids",
