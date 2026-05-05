@@ -102,7 +102,7 @@ def train_federated_recommender(
     feature_columns = loaded_clients[0]["feature_columns"]
     monitor_split_name = "validation"
     try:
-        loaded_eval_clients = _load_client_recommender_inputs(
+        loaded_monitor_clients = _load_client_recommender_inputs(
             run_artifact_dir=run_context.run_artifact_dir,
             selection_id=config.selection_id,
             persona=config.persona,
@@ -113,21 +113,15 @@ def train_federated_recommender(
             split_name=monitor_split_name,
         )
     except FileNotFoundError:
-        monitor_split_name = "test"
-        try:
-            loaded_eval_clients = _load_client_recommender_inputs(
-                run_artifact_dir=run_context.run_artifact_dir,
-                selection_id=config.selection_id,
-                persona=config.persona,
-                clients=config.clients,
-                context_filename=config.context_filename,
-                label_filename=config.label_filename,
-                feature_columns=feature_columns,
-                split_name=monitor_split_name,
-            )
-        except FileNotFoundError:
-            loaded_eval_clients = []
-    eval_lookup = {str(item["client_id"]): item for item in loaded_eval_clients}
+        LOGGER.warning(
+            "Proceeding without recommender monitoring data for run_id=%s selection_id=%s persona=%s: "
+            "no validation split was found.",
+            config.run_id,
+            config.selection_id,
+            config.persona,
+        )
+        loaded_monitor_clients = []
+    eval_lookup = {str(item["client_id"]): item for item in loaded_monitor_clients}
     missing_eval_clients = sorted(
         str(item["client_id"])
         for item in loaded_clients
@@ -136,6 +130,7 @@ def train_federated_recommender(
     model_config = PairwiseLogisticConfig(
         epochs=config.epochs,
         batch_size=config.batch_size,
+        optimizer=config.optimizer,
         learning_rate=config.learning_rate,
         l2_regularization=config.l2_regularization,
         svm_c=config.svm_c,
@@ -204,12 +199,26 @@ def train_federated_recommender(
     }
     _write_json_atomic(artifacts.feature_metadata_path, feature_metadata)
 
-    if loaded_eval_clients:
-        if training_result.clustered:
+    final_eval_split_name = "test"
+    if training_result.clustered:
+        try:
+            loaded_test_clients = _load_client_recommender_inputs(
+                run_artifact_dir=run_context.run_artifact_dir,
+                selection_id=config.selection_id,
+                persona=config.persona,
+                clients=config.clients,
+                context_filename=config.context_filename,
+                label_filename=config.label_filename,
+                feature_columns=feature_columns,
+                split_name=final_eval_split_name,
+            )
+        except FileNotFoundError:
+            loaded_test_clients = []
+        if loaded_test_clients:
             if cluster_manifest is None:
                 raise RuntimeError("Clustered recommender training completed without a cluster manifest.")
             evaluation = _evaluate_clustered_recommender_models(
-                loaded_clients=loaded_eval_clients,
+                loaded_clients=loaded_test_clients,
                 feature_columns=feature_columns,
                 cluster_assignments=training_result.final_cluster_assignments,
                 cluster_model_paths={
@@ -239,6 +248,31 @@ def train_federated_recommender(
                 / "evaluation_summary.json",
             )
         else:
+            LOGGER.warning(
+                "Recommender final evaluation skipped for run_id=%s selection_id=%s persona=%s: "
+                "no test evaluation pairs were available.",
+                config.run_id,
+                config.selection_id,
+                config.persona,
+            )
+            evaluation = {
+                "status": "skipped_no_test_pairs",
+                "run_id": config.run_id,
+                "selection_id": config.selection_id,
+                "persona": config.persona,
+                "aggregation_mode": training_variant,
+                "training_variant": training_variant,
+                "model_path": str(artifacts.model_artifact_path),
+                "feature_count": int(len(feature_columns)),
+                "client_count": 0,
+                "generated_at": current_utc_timestamp(),
+                "aggregate": {},
+                "clients": [],
+                "reason": "No test recommender evaluation pairs were available for any client.",
+            }
+            _write_json_atomic(artifacts.evaluation_summary_path, evaluation)
+    else:
+        try:
             evaluation = evaluate_recommender_model(
                 run_id=config.run_id,
                 selection_id=config.selection_id,
@@ -255,23 +289,30 @@ def train_federated_recommender(
                 secure_aggregation=config.secure_aggregation,
                 clustered=False,
             )
-    else:
-        evaluation = {
-            "status": "skipped_no_test_pairs",
-            "run_id": config.run_id,
-            "selection_id": config.selection_id,
-            "persona": config.persona,
-            "aggregation_mode": training_variant,
-            "training_variant": training_variant,
-            "model_path": str(artifacts.model_artifact_path),
-            "feature_count": int(len(feature_columns)),
-            "client_count": 0,
-            "generated_at": current_utc_timestamp(),
-            "aggregate": {},
-            "clients": [],
-            "reason": "No held-out recommender evaluation pairs were available for any client.",
-        }
-        _write_json_atomic(artifacts.evaluation_summary_path, evaluation)
+        except FileNotFoundError:
+            LOGGER.warning(
+                "Recommender final evaluation skipped for run_id=%s selection_id=%s persona=%s: "
+                "no test evaluation pairs were available.",
+                config.run_id,
+                config.selection_id,
+                config.persona,
+            )
+            evaluation = {
+                "status": "skipped_no_test_pairs",
+                "run_id": config.run_id,
+                "selection_id": config.selection_id,
+                "persona": config.persona,
+                "aggregation_mode": training_variant,
+                "training_variant": training_variant,
+                "model_path": str(artifacts.model_artifact_path),
+                "feature_count": int(len(feature_columns)),
+                "client_count": 0,
+                "generated_at": current_utc_timestamp(),
+                "aggregate": {},
+                "clients": [],
+                "reason": "No test recommender evaluation pairs were available for any client.",
+            }
+            _write_json_atomic(artifacts.evaluation_summary_path, evaluation)
 
     model_metadata = {
         "artifact_type": "federated_pairwise_recommender_model",
@@ -328,11 +369,12 @@ def train_federated_recommender(
         "raw_pair_count": int(sum(item["data"].pair_count for item in loaded_clients)),
         "candidate_count": int(sum(item["data"].candidate_count for item in loaded_clients)),
         "instance_count": int(sum(item["data"].instance_count for item in loaded_clients)),
-        "eval_split_name": monitor_split_name if loaded_eval_clients else None,
-        "eval_pair_count": int(sum(item["data"].augmented_pair_count for item in loaded_eval_clients)),
-        "eval_raw_pair_count": int(sum(item["data"].pair_count for item in loaded_eval_clients)),
-        "eval_candidate_count": int(sum(item["data"].candidate_count for item in loaded_eval_clients)),
-        "eval_instance_count": int(sum(item["data"].instance_count for item in loaded_eval_clients)),
+        "eval_split_name": monitor_split_name if loaded_monitor_clients else None,
+        "eval_pair_count": int(sum(item["data"].augmented_pair_count for item in loaded_monitor_clients)),
+        "eval_raw_pair_count": int(sum(item["data"].pair_count for item in loaded_monitor_clients)),
+        "eval_candidate_count": int(sum(item["data"].candidate_count for item in loaded_monitor_clients)),
+        "final_evaluation_split_name": final_eval_split_name,
+        "eval_instance_count": int(sum(item["data"].instance_count for item in loaded_monitor_clients)),
         "clients_without_eval": missing_eval_clients,
         "feature_count": int(len(feature_columns)),
         "feature_columns": list(feature_columns),

@@ -21,7 +21,10 @@ results
 job_launcher
 logs
 notebooks/artifacts
-notebooks/.ipynb_checkpoints
+notebooks/.ipynb_checkpoints/*
 # recommender_evaluation_*
 *.pdf
 tracker
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+./notebooks/.ipynb_checkpoints/*

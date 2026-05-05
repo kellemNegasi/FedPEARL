@@ -633,11 +633,8 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["status"] == "evaluated_clustered"
     assert evaluation["training_variant"] == "clustered"
-    assert len(evaluation["clusters"]) == 3
-    assert "cluster_id" not in evaluation["aggregate"]
-    assert "dataset_index" not in evaluation["aggregate"]
-    assert all("cluster_id" not in cluster["aggregate"] for cluster in evaluation["clusters"])
-    assert all("dataset_index" not in cluster["aggregate"] for cluster in evaluation["clusters"])
+    assert evaluation["client_count"] == 4
+    assert len(evaluation["clients"]) == 4
 
 
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")

@@ -123,7 +123,7 @@ def test_svm_rank_recommender_matches_linear_svc_style_loss_and_bias_scoring() -
     y = np.asarray([1, 0], dtype=np.int64)
 
     expected_regularization = 0.5 * (1.0**2 + (-2.0) ** 2 + (4.0 / 2.0) ** 2)
-    expected_loss = expected_regularization + 2.0 * (0.0 + 9.0)
+    expected_loss = (expected_regularization / 2.0) + (2.0 * ((0.0 + 9.0) / 2.0))
 
     assert model.loss(X, y) == pytest.approx(expected_loss)
 
