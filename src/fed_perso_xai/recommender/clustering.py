@@ -142,6 +142,7 @@ class SecureClusterAssignments:
     iterations: int
     initial_centroid_indices: tuple[int, ...]
     secure_metadata: dict[str, Any]
+    distance_matrix: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,35 @@ class _DerivedHelperPayload:
     helper_id: int
     evaluation_point: int
     payload: np.ndarray
+
+
+@dataclass(frozen=True)
+class _SingleRestartClusterResult:
+    labels: np.ndarray
+    centroids: np.ndarray
+    iterations: int
+    initial_centroid_indices: tuple[int, ...]
+    helper_ids: tuple[int, ...]
+    helper_evaluation_points: tuple[int, ...]
+    distance_matrix: np.ndarray
+    objective: float
+    restart_index: int
+    restart_seed: int
+
+
+def _resolve_secure_config_value(
+    config: Any,
+    *,
+    secure_name: str,
+    fallback_name: str,
+) -> Any:
+    if hasattr(config, secure_name):
+        return getattr(config, secure_name)
+    if hasattr(config, fallback_name):
+        return getattr(config, fallback_name)
+    raise AttributeError(
+        f"Missing secure aggregation setting '{secure_name}'/'{fallback_name}' on {type(config).__name__}."
+    )
 
 
 class RecommenderWeightVectorExtractor:
@@ -298,7 +328,7 @@ def build_identity_projection_spec(
 class ClientSideRandomProjector:
     """Client-local flatten -> random projection -> secret sharing for clustered training."""
 
-    def __init__(self, training_config: RecommenderFederatedTrainingConfig) -> None:
+    def __init__(self, training_config: Any) -> None:
         self.training_config = training_config
         self.extractor = RecommenderWeightVectorExtractor()
 
@@ -310,9 +340,25 @@ class ClientSideRandomProjector:
         projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
         round_id: int,
     ) -> SecretSharedReducedVector:
+        flat_vector = self.extractor.flatten(parameters)
+        return self.build_private_reduced_vector_from_flat_vector(
+            client_id=client_id,
+            flat_vector=flat_vector,
+            projection_spec=projection_spec,
+            round_id=round_id,
+        )
+
+    def build_private_reduced_vector_from_flat_vector(
+        self,
+        *,
+        client_id: str,
+        flat_vector: np.ndarray,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
+        round_id: int,
+    ) -> SecretSharedReducedVector:
         protocol = _build_private_clustering_protocol(self.training_config)
         share_encoder = _build_share_encoder(protocol, client_id=client_id, round_id=round_id)
-        flat_vector = self.extractor.flatten(parameters)
+        flat_vector = np.asarray(flat_vector, dtype=np.float64).reshape(-1)
         reduced_vector = projection_spec.transform(flat_vector)
         squared_norm = np.asarray([float(np.dot(reduced_vector, reduced_vector))], dtype=np.float64)
         vector_shares = tuple(
@@ -342,6 +388,7 @@ class SecureKMeansClusterer:
         projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
         seed: int,
         clustering_config: RecommenderClusteringConfig,
+        initial_vectors: np.ndarray | None = None,
     ) -> SecureClusterAssignments:
         if not shared_reduced_vectors:
             raise ValueError("shared_reduced_vectors must not be empty.")
@@ -350,15 +397,78 @@ class SecureKMeansClusterer:
 
         protocol = _build_private_clustering_protocol(self.training_config)
         dimension = int(shared_reduced_vectors[0].dimension)
-        current = _initialize_centroids(
+        restart_results = [
+            self._run_single_restart(
+                shared_reduced_vectors,
+                projection_spec=projection_spec,
+                protocol=protocol,
+                dimension=dimension,
+                clustering_config=clustering_config,
+                restart_index=restart_index,
+                restart_seed=int(seed + restart_index),
+                initial_vectors=initial_vectors,
+            )
+            for restart_index in range(int(clustering_config.num_restarts))
+        ]
+        best_result = min(restart_results, key=lambda result: (float(result.objective), int(result.restart_index)))
+        secure_metadata = {
+            "method": clustering_config.method,
+            "seed": int(seed),
+            "iterations": int(best_result.iterations),
+            "n_clusters": int(clustering_config.k),
+            "num_restarts": int(clustering_config.num_restarts),
+            "best_restart_index": int(best_result.restart_index),
+            "best_restart_seed": int(best_result.restart_seed),
+            "best_objective": float(best_result.objective),
+            "max_iterations": int(clustering_config.max_iterations),
+            "tolerance": float(clustering_config.tolerance),
+            "helper_count": int(len(protocol.helper_ids)),
+            "privacy_threshold": int(protocol.encoding_config.privacy_threshold),
+            "reconstruction_threshold": int(protocol.encoding_config.resolved_reconstruction_threshold),
+            "field_modulus": int(protocol.field_config.modulus),
+            "vector_quantization_scale": int(protocol.vector_scale),
+            "distance_quantization_scale": int(protocol.distance_scale),
+            "helper_ids": [int(value) for value in best_result.helper_ids],
+            "helper_evaluation_points": [
+                int(value) for value in best_result.helper_evaluation_points
+            ],
+            "server_observes_raw_weights": False,
+            "server_observes_reduced_vectors": False,
+            "server_observes_reconstructed_distances": True,
+            "projection_applied": "client_side",
+        }
+        return SecureClusterAssignments(
+            labels=best_result.labels,
+            centroids=best_result.centroids,
+            iterations=int(best_result.iterations),
+            initial_centroid_indices=best_result.initial_centroid_indices,
+            secure_metadata=secure_metadata,
+            distance_matrix=best_result.distance_matrix,
+        )
+
+    def _run_single_restart(
+        self,
+        shared_reduced_vectors: Sequence[SecretSharedReducedVector],
+        *,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
+        protocol: _PrivateClusteringProtocol,
+        dimension: int,
+        clustering_config: RecommenderClusteringConfig,
+        restart_index: int,
+        restart_seed: int,
+        initial_vectors: np.ndarray | None,
+    ) -> _SingleRestartClusterResult:
+        current, initial_centroid_indices = _initialize_centroids(
             projection_spec=projection_spec,
             dimension=dimension,
             n_clusters=clustering_config.k,
-            seed=seed,
+            seed=restart_seed,
+            initial_vectors=initial_vectors,
         )
         labels = np.zeros(len(shared_reduced_vectors), dtype=np.int64)
         last_distance_helper_ids: tuple[int, ...] = ()
         last_distance_evaluation_points: tuple[int, ...] = ()
+        iteration = 0
         for iteration in range(1, clustering_config.max_iterations + 1):
             distance_matrix, helper_ids, evaluation_points = self._reconstruct_distances(
                 shared_reduced_vectors,
@@ -372,7 +482,7 @@ class SecureKMeansClusterer:
                 current,
                 protocol,
                 clustering_config.k,
-                round_seed=seed + iteration,
+                round_seed=(restart_seed * 10_000) + iteration,
             )
             shift = float(np.linalg.norm(updated - current))
             current = updated
@@ -387,34 +497,18 @@ class SecureKMeansClusterer:
             protocol,
         )
         labels = np.argmin(distance_matrix, axis=1).astype(np.int64, copy=False)
-        secure_metadata = {
-            "method": clustering_config.method,
-            "seed": int(seed),
-            "iterations": int(iteration),
-            "n_clusters": int(clustering_config.k),
-            "max_iterations": int(clustering_config.max_iterations),
-            "tolerance": float(clustering_config.tolerance),
-            "helper_count": int(len(protocol.helper_ids)),
-            "privacy_threshold": int(protocol.encoding_config.privacy_threshold),
-            "reconstruction_threshold": int(protocol.encoding_config.resolved_reconstruction_threshold),
-            "field_modulus": int(protocol.field_config.modulus),
-            "vector_quantization_scale": int(protocol.vector_scale),
-            "distance_quantization_scale": int(protocol.distance_scale),
-            "helper_ids": [int(value) for value in helper_ids or last_distance_helper_ids],
-            "helper_evaluation_points": [
-                int(value) for value in evaluation_points or last_distance_evaluation_points
-            ],
-            "server_observes_raw_weights": False,
-            "server_observes_reduced_vectors": False,
-            "server_observes_reconstructed_distances": True,
-            "projection_applied": "client_side",
-        }
-        return SecureClusterAssignments(
-            labels=labels,
+        objective = float(np.sum(distance_matrix[np.arange(labels.shape[0]), labels], dtype=np.float64))
+        return _SingleRestartClusterResult(
+            labels=labels.astype(np.int64, copy=True),
             centroids=current.astype(np.float64, copy=True),
             iterations=int(iteration),
-            initial_centroid_indices=tuple(),
-            secure_metadata=secure_metadata,
+            initial_centroid_indices=initial_centroid_indices,
+            helper_ids=helper_ids or last_distance_helper_ids,
+            helper_evaluation_points=evaluation_points or last_distance_evaluation_points,
+            distance_matrix=distance_matrix.astype(np.float64, copy=True),
+            objective=float(objective),
+            restart_index=int(restart_index),
+            restart_seed=int(restart_seed),
         )
 
     def _reconstruct_distances(
@@ -512,16 +606,18 @@ class SecureClusterModelAggregator:
     def aggregate(
         self,
         *,
-        client_parameters: Mapping[str, Sequence[np.ndarray]],
+        client_updates: Mapping[str, Any],
         client_weights: Mapping[str, int | float],
+        client_weighted_payload_bounds: Mapping[str, float],
         assignments: Mapping[str, int],
         round_id: int,
         cluster_count: int,
         fallback_parameters: Mapping[int, Sequence[np.ndarray]],
+        total_examples_normalizer: int | float | None = None,
+        min_contributors: int = 2,
     ) -> dict[int, ClusterAggregationResult]:
-        aggregator = _build_secure_round_aggregator(self.training_config)
+        aggregator = _build_pre_encoded_secure_round_aggregator(self.training_config)
         results: dict[int, ClusterAggregationResult] = {}
-        min_contributors = 2
         for cluster_id in range(cluster_count):
             member_ids = [
                 client_id
@@ -553,21 +649,36 @@ class SecureClusterModelAggregator:
             total_weight = float(sum(float(client_weights[client_id]) for client_id in member_ids))
             if total_weight <= 0.0:
                 raise ValueError(f"Cluster {cluster_id} requires a positive total client weight.")
-            weighted_payloads = [
-                _scale_parameter_set(
-                    client_parameters[client_id],
-                    float(client_weights[client_id]) / total_weight,
-                )
-                for client_id in member_ids
-            ]
-            secure_result = aggregator.aggregate(
-                weighted_payloads,
+            max_component_l1 = _validate_cluster_encoded_aggregate_bound(
+                member_ids=member_ids,
+                client_weighted_payload_bounds=client_weighted_payload_bounds,
+                quantization_scale=int(
+                    _resolve_secure_config_value(
+                        self.training_config,
+                        secure_name="secure_quantization_scale",
+                        fallback_name="quantization_scale",
+                    )
+                ),
+                field_modulus=int(
+                    _resolve_secure_config_value(
+                        self.training_config,
+                        secure_name="secure_field_modulus",
+                        fallback_name="field_modulus",
+                    )
+                ),
+            )
+            secure_result = aggregator.aggregate_encoded(
+                [client_updates[client_id] for client_id in member_ids],
                 round_id=(int(round_id) * 10_000) + cluster_id,
-                client_ids=list(member_ids),
+            )
+            restoration_factor = (
+                float(total_examples_normalizer) / total_weight
+                if total_examples_normalizer is not None
+                else (1.0 / total_weight)
             )
             results[cluster_id] = ClusterAggregationResult(
                 parameters=[
-                    np.asarray(parameter, dtype=np.float64).copy()
+                    np.asarray(parameter, dtype=np.float64).copy() * restoration_factor
                     for parameter in secure_result.aggregated_tensors
                 ],
                 metadata={
@@ -581,9 +692,28 @@ class SecureClusterModelAggregator:
                     "helper_evaluation_points": [
                         int(value) for value in secure_result.helper_evaluation_points
                     ],
-                    "field_modulus": int(self.training_config.secure_field_modulus),
-                    "quantization_scale": int(self.training_config.secure_quantization_scale),
+                    "field_modulus": int(
+                        _resolve_secure_config_value(
+                            self.training_config,
+                            secure_name="secure_field_modulus",
+                            fallback_name="field_modulus",
+                        )
+                    ),
+                    "quantization_scale": int(
+                        _resolve_secure_config_value(
+                            self.training_config,
+                            secure_name="secure_quantization_scale",
+                            fallback_name="quantization_scale",
+                        )
+                    ),
+                    "max_component_l1": float(max_component_l1),
                     "max_abs_error": float(secure_result.max_abs_error),
+                    "weight_normalization_total_examples": (
+                        None
+                        if total_examples_normalizer is None
+                        else float(total_examples_normalizer)
+                    ),
+                    "weight_restoration_factor": float(restoration_factor),
                 },
             )
         return results
@@ -629,8 +759,43 @@ def _initialize_centroids(
     dimension: int,
     n_clusters: int,
     seed: int,
-) -> np.ndarray:
+    initial_vectors: np.ndarray | None = None,
+) -> tuple[np.ndarray, tuple[int, ...]]:
     rng = np.random.default_rng(seed)
+    if initial_vectors is not None:
+        matrix = np.asarray(initial_vectors, dtype=np.float64)
+        if matrix.ndim != 2:
+            raise ValueError("initial_vectors must be a 2D array.")
+        if matrix.shape[1] != int(dimension):
+            raise ValueError(
+                f"Expected initial_vectors width {dimension}, got {matrix.shape[1]}."
+            )
+        if matrix.shape[0] < int(n_clusters):
+            raise ValueError("initial_vectors must contain at least n_clusters rows.")
+
+        centroid_indices: list[int] = [int(rng.integers(matrix.shape[0]))]
+        centroids = [matrix[centroid_indices[0]].copy()]
+        min_sq_distances = np.sum((matrix - centroids[0]) ** 2, axis=1)
+        while len(centroid_indices) < int(n_clusters):
+            candidate_scores = np.maximum(min_sq_distances, 0.0)
+            candidate_scores[np.asarray(centroid_indices, dtype=np.int64)] = 0.0
+            if float(candidate_scores.sum()) <= 0.0:
+                remaining = [
+                    index for index in range(matrix.shape[0]) if index not in set(centroid_indices)
+                ]
+                if not remaining:
+                    break
+                next_index = int(rng.choice(np.asarray(remaining, dtype=np.int64)))
+            else:
+                probabilities = candidate_scores / float(candidate_scores.sum())
+                next_index = int(rng.choice(matrix.shape[0], p=probabilities))
+            centroid_indices.append(next_index)
+            next_centroid = matrix[next_index].copy()
+            centroids.append(next_centroid)
+            squared_distances = np.sum((matrix - next_centroid) ** 2, axis=1)
+            min_sq_distances = np.minimum(min_sq_distances, squared_distances)
+        return np.stack(centroids, axis=0), tuple(int(index) for index in centroid_indices)
+
     centroids = rng.normal(loc=0.0, scale=1e-3, size=(n_clusters, dimension)).astype(np.float64)
     if dimension == 0:
         raise ValueError("dimension must be positive.")
@@ -639,7 +804,7 @@ def _initialize_centroids(
         axis = cluster_id % dimension
         sign = -1.0 if cluster_id % 2 else 1.0
         centroids[cluster_id, axis] += sign * float(scales[axis])
-    return centroids
+    return centroids, tuple()
 
 
 def _projection_axis_scales(
@@ -661,12 +826,9 @@ def _scale_parameter_set(
     return [np.asarray(parameter, dtype=np.float64) * float(factor) for parameter in parameters]
 
 
-def _build_secure_round_aggregator(training_config: RecommenderFederatedTrainingConfig) -> Any:
+def _build_pre_encoded_secure_round_aggregator(training_config: Any) -> Any:
     try:
-        from lcc_lib.aggregation.secure_aggregator import (
-            SecureAggregationConfig,
-            SecureAggregator,
-        )
+        from lcc_lib.aggregation import EncodedShareAggregator, SecureAggregationConfig
         from lcc_lib.coding.field_ops import FieldConfig
         from lcc_lib.coding.share_codec import ShareEncodingConfig
         from lcc_lib.quantization.quantizer import QuantizationConfig
@@ -676,18 +838,60 @@ def _build_secure_round_aggregator(training_config: RecommenderFederatedTraining
             "for example with `python3 -m pip install ../lcc-lib`."
         ) from exc
 
-    return SecureAggregator(
+    return EncodedShareAggregator(
         SecureAggregationConfig(
-            field_config=FieldConfig(modulus=training_config.secure_field_modulus),
+            field_config=FieldConfig(
+                modulus=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_field_modulus",
+                        fallback_name="field_modulus",
+                    )
+                )
+            ),
             quantization=QuantizationConfig(
-                field_modulus=training_config.secure_field_modulus,
-                scale=training_config.secure_quantization_scale,
+                field_modulus=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_field_modulus",
+                        fallback_name="field_modulus",
+                    )
+                ),
+                scale=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_quantization_scale",
+                        fallback_name="quantization_scale",
+                    )
+                ),
             ),
             encoding=ShareEncodingConfig(
-                num_helpers=training_config.secure_num_helpers,
-                privacy_threshold=training_config.secure_privacy_threshold,
-                reconstruction_threshold=training_config.secure_reconstruction_threshold,
-                seed=training_config.secure_seed,
+                num_helpers=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_num_helpers",
+                        fallback_name="num_helpers",
+                    )
+                ),
+                privacy_threshold=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_privacy_threshold",
+                        fallback_name="privacy_threshold",
+                    )
+                ),
+                reconstruction_threshold=_resolve_secure_config_value(
+                    training_config,
+                    secure_name="secure_reconstruction_threshold",
+                    fallback_name="reconstruction_threshold",
+                ),
+                seed=int(
+                    _resolve_secure_config_value(
+                        training_config,
+                        secure_name="secure_seed",
+                        fallback_name="seed",
+                    )
+                ),
             ),
             compute_mean=False,
         )
@@ -695,7 +899,7 @@ def _build_secure_round_aggregator(training_config: RecommenderFederatedTraining
 
 
 def _build_private_clustering_protocol(
-    training_config: RecommenderFederatedTrainingConfig,
+    training_config: Any,
 ) -> _PrivateClusteringProtocol:
     try:
         from lcc_lib.coding.field_ops import FieldConfig
@@ -708,26 +912,66 @@ def _build_private_clustering_protocol(
             "for example with `python3 -m pip install ../lcc-lib`."
         ) from exc
 
-    vector_scale = max(1, math.isqrt(int(training_config.secure_quantization_scale)))
+    quantization_scale = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_quantization_scale",
+            fallback_name="quantization_scale",
+        )
+    )
+    field_modulus = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_field_modulus",
+            fallback_name="field_modulus",
+        )
+    )
+    num_helpers = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_num_helpers",
+            fallback_name="num_helpers",
+        )
+    )
+    privacy_threshold = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_privacy_threshold",
+            fallback_name="privacy_threshold",
+        )
+    )
+    reconstruction_threshold = _resolve_secure_config_value(
+        training_config,
+        secure_name="secure_reconstruction_threshold",
+        fallback_name="reconstruction_threshold",
+    )
+    secure_seed = int(
+        _resolve_secure_config_value(
+            training_config,
+            secure_name="secure_seed",
+            fallback_name="seed",
+        )
+    )
+    vector_scale = max(1, math.isqrt(quantization_scale))
     distance_scale = max(1, vector_scale * vector_scale)
-    field_config = FieldConfig(modulus=training_config.secure_field_modulus)
+    field_config = FieldConfig(modulus=field_modulus)
     encoding_config = ShareEncodingConfig(
-        num_helpers=training_config.secure_num_helpers,
-        privacy_threshold=training_config.secure_privacy_threshold,
-        reconstruction_threshold=training_config.secure_reconstruction_threshold,
-        seed=training_config.secure_seed,
+        num_helpers=num_helpers,
+        privacy_threshold=privacy_threshold,
+        reconstruction_threshold=reconstruction_threshold,
+        seed=secure_seed,
     )
     return _PrivateClusteringProtocol(
         field_config=field_config,
         vector_quantizer=Quantizer(
             QuantizationConfig(
-                field_modulus=training_config.secure_field_modulus,
+                field_modulus=field_modulus,
                 scale=vector_scale,
             )
         ),
         distance_quantizer=Quantizer(
             QuantizationConfig(
-                field_modulus=training_config.secure_field_modulus,
+                field_modulus=field_modulus,
                 scale=distance_scale,
             )
         ),
@@ -739,6 +983,40 @@ def _build_private_clustering_protocol(
         vector_scale=int(vector_scale),
         distance_scale=int(distance_scale),
     )
+
+
+def _validate_cluster_encoded_aggregate_bound(
+    *,
+    member_ids: Sequence[str],
+    client_weighted_payload_bounds: Mapping[str, float],
+    quantization_scale: int,
+    field_modulus: int,
+) -> float:
+    if quantization_scale < 1:
+        raise ValueError("quantization_scale must be at least 1.")
+    if field_modulus <= 2:
+        raise ValueError("field_modulus must be greater than 2.")
+    weighted_payload_bounds: list[float] = []
+    for client_id in member_ids:
+        bound_value = float(client_weighted_payload_bounds[client_id])
+        if not np.isfinite(bound_value):
+            raise ValueError("Secure aggregation weighted payload bounds must be finite.")
+        if bound_value < 0.0:
+            raise ValueError("Secure aggregation weighted payload bounds must be non-negative.")
+        weighted_payload_bounds.append(bound_value)
+    total_max_abs_bound = float(sum(weighted_payload_bounds))
+    signed_bound = (field_modulus - 1) // 2
+    if total_max_abs_bound * float(quantization_scale) > float(signed_bound):
+        max_safe_scale = int(signed_bound // total_max_abs_bound) if total_max_abs_bound > 0.0 else int(
+            quantization_scale
+        )
+        raise ValueError(
+            "Secure aggregation aggregate may overflow the finite field under the current "
+            f"bound estimate (sum_client_max_abs={total_max_abs_bound:.6g}, "
+            f"scale={quantization_scale}, signed_bound={signed_bound}, "
+            f"max_safe_scale={max_safe_scale})."
+        )
+    return total_max_abs_bound
 
 
 def _build_share_encoder(

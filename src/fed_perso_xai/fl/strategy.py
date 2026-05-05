@@ -20,7 +20,18 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
     fl = None  # type: ignore[assignment]
 
 from fed_perso_xai.evaluation.metrics import aggregate_weighted_metrics
-from fed_perso_xai.fl.client import extract_shared_parameter_payload
+from fed_perso_xai.fl.client import (
+    SECURE_PAYLOAD_ENCODING_KEY,
+    SECURE_PAYLOAD_ENCODING_VALUE,
+    SECURE_PAYLOAD_LAYOUT_KEY,
+    SECURE_TOTAL_EXAMPLES_FIXED_KEY,
+    SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY,
+    SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY,
+    SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
+    deserialize_secure_payload_clipping_summary,
+    deserialize_secure_payload_layout,
+    extract_shared_parameter_payload,
+)
 from fed_perso_xai.utils.config import FederatedTrainingConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -33,6 +44,8 @@ class FederatedRunRecorder:
     backend: str
     round_history: list[dict[str, object]] = field(default_factory=list)
     final_parameters: list[np.ndarray] | None = None
+    client_example_counts: dict[str, int] = field(default_factory=dict)
+    total_client_examples: int = 0
 
 
 @dataclass(frozen=True)
@@ -203,6 +216,128 @@ def _plan_secure_quantization(
     )
 
 
+def _validate_encoded_secure_aggregate_bound(
+    results: Sequence[tuple[Any, Any]],
+    *,
+    quantization_scale: int,
+    field_modulus: int,
+) -> float:
+    if quantization_scale < 1:
+        raise ValueError("quantization_scale must be at least 1.")
+    if field_modulus <= 2:
+        raise ValueError("field_modulus must be greater than 2.")
+    weighted_payload_bounds: list[float] = []
+    for _, fit_res in results:
+        bound = fit_res.metrics.get(SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY)
+        if not isinstance(bound, (int, float)):
+            raise ValueError(
+                "Secure aggregation expected each client to report secure_weighted_payload_max_abs."
+            )
+        bound_value = float(bound)
+        if not np.isfinite(bound_value):
+            raise ValueError("Secure aggregation weighted payload bounds must be finite.")
+        if bound_value < 0.0:
+            raise ValueError("Secure aggregation weighted payload bounds must be non-negative.")
+        weighted_payload_bounds.append(bound_value)
+    total_max_abs_bound = float(sum(weighted_payload_bounds))
+    signed_bound = (field_modulus - 1) // 2
+    if total_max_abs_bound * float(quantization_scale) > float(signed_bound):
+        raise ValueError(
+            "Secure aggregation aggregate may overflow the finite field under the current "
+            f"bound estimate (sum_client_max_abs={total_max_abs_bound:.6g}, "
+            f"scale={quantization_scale}, signed_bound={signed_bound})."
+        )
+    return total_max_abs_bound
+
+
+def _resolve_secure_total_examples_normalizer(
+    results: Sequence[tuple[Any, Any]],
+) -> float | None:
+    normalizers: list[float] = []
+    for _, fit_res in results:
+        value = fit_res.metrics.get(SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY)
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)):
+            raise ValueError(
+                "Secure aggregation expected numeric secure_total_examples_normalizer values."
+            )
+        normalized_value = float(value)
+        if not np.isfinite(normalized_value) or normalized_value <= 0.0:
+            raise ValueError("secure_total_examples_normalizer must be a finite positive number.")
+        normalizers.append(normalized_value)
+    if not normalizers:
+        return None
+    reference = normalizers[0]
+    for value in normalizers[1:]:
+        if not np.isclose(value, reference, rtol=0.0, atol=0.0):
+            raise ValueError(
+                "Secure aggregation expected the same secure_total_examples_normalizer from all clients."
+            )
+    if len(normalizers) != len(results):
+        raise ValueError(
+            "Secure aggregation expected all secure clients in the round to report secure_total_examples_normalizer."
+        )
+    return reference
+
+
+def _build_secure_clipping_report(results: Sequence[tuple[Any, Any]]) -> dict[str, Any] | None:
+    clipping_clients: list[dict[str, Any]] = []
+    total_clients = 0
+    for _, fit_res in results:
+        total_clients += 1
+        payload = fit_res.metrics.get(SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY)
+        if not isinstance(payload, str):
+            continue
+        summary = deserialize_secure_payload_clipping_summary(payload)
+        if not summary.clip_applied:
+            continue
+        clipping_clients.append(
+            {
+                "client_id": str(fit_res.metrics.get("client_id", "")),
+                "num_examples": int(getattr(fit_res, "num_examples", 0)),
+                "clip_threshold_abs": (
+                    None
+                    if summary.clip_threshold_abs is None
+                    else float(summary.clip_threshold_abs)
+                ),
+                "raw_weighted_payload_max_abs": float(summary.raw_weighted_payload_max_abs),
+                "effective_weighted_payload_max_abs": float(
+                    summary.effective_weighted_payload_max_abs
+                ),
+                "raw_max_component_value": float(summary.raw_max_component_value),
+                "clipped_max_component_value": float(summary.clipped_max_component_value),
+                "clipped_component_count": int(summary.clipped_component_count),
+                "total_component_count": int(summary.total_component_count),
+                "clipped_fraction": float(summary.clipped_fraction),
+                "total_clipping_l1": float(summary.total_clipping_l1),
+                "max_clipping_delta_abs": float(summary.max_clipping_delta_abs),
+            }
+        )
+    if not clipping_clients:
+        return None
+    return {
+        "applied_client_count": int(len(clipping_clients)),
+        "total_client_count": int(total_clients),
+        "max_raw_weighted_payload_abs": float(
+            max(item["raw_weighted_payload_max_abs"] for item in clipping_clients)
+        ),
+        "max_effective_weighted_payload_abs": float(
+            max(item["effective_weighted_payload_max_abs"] for item in clipping_clients)
+        ),
+        "total_clipped_components": int(
+            sum(item["clipped_component_count"] for item in clipping_clients)
+        ),
+        "total_components": int(
+            sum(item["total_component_count"] for item in clipping_clients)
+        ),
+        "total_clipping_l1": float(
+            sum(item["total_clipping_l1"] for item in clipping_clients)
+        ),
+        "clients": clipping_clients,
+    }
+
+
 def _build_secure_aggregator(
     training_config: FederatedTrainingConfig,
     *,
@@ -248,6 +383,37 @@ def _build_secure_aggregator(
     )
 
 
+def _build_pre_encoded_secure_aggregator(training_config: FederatedTrainingConfig) -> Any:
+    _validate_secure_config(training_config)
+    try:
+        from lcc_lib.aggregation import EncodedShareAggregator, SecureAggregationConfig
+        from lcc_lib.coding.field_ops import FieldConfig
+        from lcc_lib.coding.share_codec import ShareEncodingConfig
+        from lcc_lib.quantization.quantizer import QuantizationConfig
+    except ImportError as exc:  # pragma: no cover - depends on local sibling install
+        raise ImportError(
+            "Secure aggregation requires `lcc-lib`. Install the sibling package, for example "
+            "with `python3 -m pip install ../lcc-lib`, before enabling `secure_aggregation`."
+        ) from exc
+
+    return EncodedShareAggregator(
+        SecureAggregationConfig(
+            field_config=FieldConfig(modulus=training_config.secure_field_modulus),
+            quantization=QuantizationConfig(
+                field_modulus=training_config.secure_field_modulus,
+                scale=training_config.secure_quantization_scale,
+            ),
+            encoding=ShareEncodingConfig(
+                num_helpers=training_config.secure_num_helpers,
+                privacy_threshold=training_config.secure_privacy_threshold,
+                reconstruction_threshold=training_config.secure_reconstruction_threshold,
+                seed=training_config.secure_seed,
+            ),
+            compute_mean=False,
+        )
+    )
+
+
 if fl is not None:
 
     class TrackingFedAvg(fl.server.strategy.FedAvg):
@@ -263,8 +429,8 @@ if fl is not None:
             super().__init__(*args, **kwargs)
             self.recorder = recorder
             self.training_config = training_config
-            self._secure_aggregator = (
-                _build_secure_aggregator(training_config)
+            self._secure_share_aggregator = (
+                _build_pre_encoded_secure_aggregator(training_config)
                 if training_config.secure_aggregation
                 else None
             )
@@ -275,6 +441,90 @@ if fl is not None:
                 training_config.secure_quantization_scale,
                 training_config.secure_field_modulus,
             )
+
+        def _resolve_client_example_count(self, client_identifier: str) -> int:
+            try:
+                value = self.recorder.client_example_counts[str(client_identifier)]
+            except KeyError as exc:
+                known = ", ".join(sorted(self.recorder.client_example_counts))
+                raise KeyError(
+                    f"Missing client example count for identifier {client_identifier!r}. "
+                    f"Known identifiers: {known}"
+                ) from exc
+            return int(value)
+
+        def _resolve_client_proxy_identifier(self, client_proxy: Any) -> str:
+            for attr_name in ("cid", "node_id"):
+                value = getattr(client_proxy, attr_name, None)
+                if value is None:
+                    continue
+                identifier = str(value)
+                if identifier in self.recorder.client_example_counts:
+                    return identifier
+            for attr_name in ("cid", "node_id"):
+                value = getattr(client_proxy, attr_name, None)
+                if value is not None:
+                    return str(value)
+            raise ValueError("Could not resolve identifiers for sampled Flower client proxy.")
+
+        def _build_fit_config_for_client_ids(
+            self,
+            server_round: int,
+            client_ids: Sequence[str] | None = None,
+        ) -> dict[str, Any]:
+            config = dict(self.on_fit_config_fn(server_round) if self.on_fit_config_fn is not None else {})
+            if not self.training_config.secure_aggregation:
+                return config
+
+            full_participation = float(self.training_config.fit_fraction) >= 1.0
+            if full_participation:
+                total_examples = int(self.recorder.total_client_examples)
+                if total_examples <= 0:
+                    raise ValueError(
+                        "Secure normalization requires recorder.total_client_examples to be populated."
+                    )
+                if int(server_round) == 1:
+                    config[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples)
+                    config[SECURE_TOTAL_EXAMPLES_FIXED_KEY] = 1
+                return config
+
+            if client_ids is None:
+                raise ValueError(
+                    "Per-round secure normalization for sampled clients requires explicit client_ids."
+                )
+            total_examples = int(
+                sum(self._resolve_client_example_count(client_id) for client_id in client_ids)
+            )
+            if total_examples <= 0:
+                raise ValueError("Secure normalization requires a positive sampled-client example total.")
+            config[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples)
+            config[SECURE_TOTAL_EXAMPLES_FIXED_KEY] = 0
+            return config
+
+        def configure_fit(self, server_round, parameters, client_manager):  # type: ignore[override]
+            fit_plan = super().configure_fit(server_round, parameters, client_manager)
+            if not self.training_config.secure_aggregation:
+                return fit_plan
+
+            selected_client_ids = [
+                self._resolve_client_proxy_identifier(client_proxy)
+                for client_proxy, _ in fit_plan
+            ]
+            shared_config = self._build_fit_config_for_client_ids(
+                server_round,
+                client_ids=selected_client_ids,
+            )
+            rewritten_plan = []
+            for client_proxy, fit_ins in fit_plan:
+                merged_config = dict(fit_ins.config)
+                merged_config.update(shared_config)
+                rewritten_plan.append(
+                    (
+                        client_proxy,
+                        fl.common.FitIns(parameters=fit_ins.parameters, config=merged_config),
+                    )
+                )
+            return rewritten_plan
 
         def aggregate_fit(self, server_round, results, failures):  # type: ignore[override]
             if not results:
@@ -369,80 +619,135 @@ if fl is not None:
             server_round: int,
             results: list[tuple[Any, Any]],
         ) -> tuple[list[np.ndarray], dict[str, object]]:
-            if self._secure_aggregator is None:
+            if self._secure_share_aggregator is None:
                 raise RuntimeError("Secure aggregation was requested but no aggregator is configured.")
 
-            shared_payloads = [
-                self._extract_shared_payload_from_fitres(fit_res) for _, fit_res in results
-            ]
             weights = [fit_res.num_examples for _, fit_res in results]
             total_weight = float(sum(weights))
             if total_weight <= 0.0:
                 raise ValueError("Secure aggregation requires a positive total example count.")
-            # `lcc-lib` reconstructs a sum, not a mean. The strategy therefore
-            # applies client weighting before aggregation and owns any division
-            # or normalization semantics. If `lcc-lib` changes that contract,
-            # this strategy must change with it.
-            weighted_payloads = [
-                _scale_parameter_set(payload, fit_res.num_examples / total_weight)
-                for payload, (_, fit_res) in zip(shared_payloads, results, strict=True)
-            ]
-            quantization_plan = _plan_secure_quantization(
-                weighted_payloads,
-                requested_scale=self.training_config.secure_quantization_scale,
+            max_component_l1 = _validate_encoded_secure_aggregate_bound(
+                results,
+                quantization_scale=self.training_config.secure_quantization_scale,
                 field_modulus=self.training_config.secure_field_modulus,
             )
-            secure_aggregator = self._secure_aggregator
+            clipping_report = _build_secure_clipping_report(results)
+            total_examples_normalizer = _resolve_secure_total_examples_normalizer(results)
+            secure_aggregator = self._secure_share_aggregator
             if secure_aggregator is None:
                 raise RuntimeError("Secure aggregation was requested but no aggregator is configured.")
-            if quantization_plan.effective_scale != quantization_plan.requested_scale:
-                LOGGER.warning(
-                    "Round %s secure quantization scale adjusted from %s to %s to stay within field modulus=%s (max_component_l1=%.6g, signed_bound=%s)",
-                    server_round,
-                    quantization_plan.requested_scale,
-                    quantization_plan.effective_scale,
-                    self.training_config.secure_field_modulus,
-                    quantization_plan.max_component_l1,
-                    quantization_plan.signed_bound,
-                )
-                secure_aggregator = _build_secure_aggregator(
-                    self.training_config,
-                    scale_override=quantization_plan.effective_scale,
-                )
-            client_ids = [
-                str(fit_res.metrics.get("client_id", index))
+            encoded_updates = [
+                self._extract_secure_update_from_fitres(fit_res, default_client_id=str(index))
                 for index, (_, fit_res) in enumerate(results)
             ]
-            secure_result = secure_aggregator.aggregate(
-                weighted_payloads,
+            secure_result = secure_aggregator.aggregate_encoded(
+                encoded_updates,
                 round_id=server_round,
-                client_ids=client_ids,
             )
-            aggregated = self._compose_updated_parameters(secure_result.aggregated_tensors)
+            scale_factor = (
+                float(total_examples_normalizer) / total_weight
+                if total_examples_normalizer is not None
+                else (1.0 / total_weight)
+            )
+            aggregated = self._compose_updated_parameters(
+                _scale_parameter_set(secure_result.aggregated_tensors, scale_factor)
+            )
+            max_abs_error = (
+                float(secure_result.max_abs_error)
+                if np.isfinite(secure_result.max_abs_error)
+                else None
+            )
             LOGGER.info(
-                "Round %s secure aggregation contributors=%s helpers=%s scale=%s modulus=%s max_abs_error=%.6g",
+                "Round %s secure aggregation contributors=%s helpers=%s scale=%s modulus=%s max_abs_error=%s",
                 server_round,
                 secure_result.num_contributors,
                 len(secure_result.helper_ids),
-                quantization_plan.effective_scale,
+                self.training_config.secure_quantization_scale,
                 self.training_config.secure_field_modulus,
-                secure_result.max_abs_error,
+                "n/a" if max_abs_error is None else f"{max_abs_error:.6g}",
             )
+            if clipping_report is not None:
+                LOGGER.warning(
+                    "Round %s secure clipping summary applied_clients=%s/%s "
+                    "max_raw_weighted_abs=%.6g max_effective_weighted_abs=%.6g "
+                    "total_clipped_components=%s total_clipping_l1=%.6g",
+                    server_round,
+                    int(clipping_report["applied_client_count"]),
+                    int(clipping_report["total_client_count"]),
+                    float(clipping_report["max_raw_weighted_payload_abs"]),
+                    float(clipping_report["max_effective_weighted_payload_abs"]),
+                    int(clipping_report["total_clipped_components"]),
+                    float(clipping_report["total_clipping_l1"]),
+                )
             return aggregated, {
                 "mode": "secure",
                 "num_contributors": secure_result.num_contributors,
                 "helper_count": len(secure_result.helper_ids),
                 "field_modulus": self.training_config.secure_field_modulus,
-                "quantization_scale": quantization_plan.effective_scale,
-                "requested_quantization_scale": quantization_plan.requested_scale,
-                "max_component_l1": quantization_plan.max_component_l1,
-                "max_abs_error": secure_result.max_abs_error,
+                "quantization_scale": self.training_config.secure_quantization_scale,
+                "requested_quantization_scale": self.training_config.secure_quantization_scale,
+                "max_component_l1": max_component_l1,
+                "max_abs_error": max_abs_error,
+                "weight_normalization_total_examples": total_examples_normalizer,
+                "clipping": clipping_report,
             }
 
         def _extract_shared_payload_from_fitres(self, fit_res: Any) -> list[np.ndarray]:
             parameters = fl.common.parameters_to_ndarrays(fit_res.parameters)
             shared_payload = extract_shared_parameter_payload(parameters)
             return shared_payload.shared_parameters
+
+        def _extract_secure_update_from_fitres(
+            self,
+            fit_res: Any,
+            *,
+            default_client_id: str,
+        ) -> Any:
+            try:
+                from lcc_lib.aggregation import EncodedClientUpdate
+                from lcc_lib.coding.share_codec import EncodedShare, ShareEncodingConfig
+            except ImportError as exc:  # pragma: no cover - depends on local sibling install
+                raise ImportError(
+                    "Secure aggregation requires `lcc-lib`. Install the sibling package, for example "
+                    "with `python3 -m pip install ../lcc-lib`, before enabling `secure_aggregation`."
+                ) from exc
+
+            encoding_mode = fit_res.metrics.get(SECURE_PAYLOAD_ENCODING_KEY)
+            if encoding_mode != SECURE_PAYLOAD_ENCODING_VALUE:
+                raise ValueError(
+                    "Secure aggregation expected client-encoded helper shares in fit metrics."
+                )
+            layout_payload = fit_res.metrics.get(SECURE_PAYLOAD_LAYOUT_KEY)
+            if not isinstance(layout_payload, str):
+                raise ValueError("Secure aggregation expected a serialized payload layout in fit metrics.")
+            layout = deserialize_secure_payload_layout(layout_payload)
+            helper_payloads = fl.common.parameters_to_ndarrays(fit_res.parameters)
+            encoding_config = ShareEncodingConfig(
+                num_helpers=self.training_config.secure_num_helpers,
+                privacy_threshold=self.training_config.secure_privacy_threshold,
+                reconstruction_threshold=self.training_config.secure_reconstruction_threshold,
+                seed=self.training_config.secure_seed,
+            )
+            helper_points = encoding_config.helper_evaluation_points
+            if len(helper_payloads) != len(helper_points):
+                raise ValueError(
+                    "Secure aggregation expected one encoded helper share per configured helper."
+                )
+            helper_shares = tuple(
+                EncodedShare(
+                    helper_id=helper_id,
+                    evaluation_point=evaluation_point,
+                    payload=np.asarray(payload, dtype=np.int64),
+                )
+                for helper_id, (evaluation_point, payload) in enumerate(
+                    zip(helper_points, helper_payloads, strict=True)
+                )
+            )
+            return EncodedClientUpdate(
+                client_id=str(fit_res.metrics.get("client_id", default_client_id)),
+                layout=layout,
+                helper_shares=helper_shares,
+            )
 
         def _compose_updated_parameters(
             self,
@@ -504,6 +809,7 @@ class FedAvgStrategyFactory:
             initial_parameters=fl.common.ndarrays_to_parameters(initial_parameters),
             fit_metrics_aggregation_fn=_aggregate_scalar_metrics,
             evaluate_metrics_aggregation_fn=_aggregate_scalar_metrics,
+            on_fit_config_fn=lambda server_round: {"server_round": int(server_round)},
         )
 
 

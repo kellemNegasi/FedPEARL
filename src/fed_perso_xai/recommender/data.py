@@ -96,9 +96,10 @@ class PairwiseRecommenderData:
 
 @dataclass(frozen=True)
 class RecommenderInstanceSplit:
-    """Deterministic train/test split over recommender instance identifiers."""
+    """Deterministic train/validation/test split over recommender instance identifiers."""
 
     train_instance_ids: tuple[int, ...]
+    validation_instance_ids: tuple[int, ...]
     test_instance_ids: tuple[int, ...]
 
 
@@ -131,9 +132,14 @@ def split_recommender_instance_ids(
     candidates: pd.DataFrame,
     *,
     test_size: float = 0.2,
+    validation_size: float = 0.0,
     random_state: int = 42,
 ) -> RecommenderInstanceSplit:
-    """Split unique dataset_index values into train/test instance ids."""
+    """Split unique dataset_index values into train/validation/test instance ids.
+
+    `validation_size` is applied to the remaining train pool after the held-out
+    test split has been carved out. A zero value disables validation splitting.
+    """
 
     if "dataset_index" not in candidates.columns:
         raise ValueError("Candidates are missing required column: 'dataset_index'.")
@@ -149,14 +155,46 @@ def split_recommender_instance_ids(
         random_state=random_state,
         shuffle=True,
     )
-    resolved_train_ids = tuple(sorted(int(value) for value in train_ids))
+    remaining_train_ids = tuple(sorted(int(value) for value in train_ids))
     resolved_test_ids = tuple(sorted(int(value) for value in test_ids))
-    if not resolved_train_ids or not resolved_test_ids:
+    if not remaining_train_ids or not resolved_test_ids:
         raise ValueError("Recommender instance split must produce non-empty train and test partitions.")
+
+    resolved_validation_ids: tuple[int, ...] = ()
+    resolved_train_ids = remaining_train_ids
+    if _is_disabled_split_size(validation_size):
+        validation_size = 0.0
+    else:
+        if len(remaining_train_ids) < 2:
+            return RecommenderInstanceSplit(
+                train_instance_ids=resolved_train_ids,
+                validation_instance_ids=resolved_validation_ids,
+                test_instance_ids=resolved_test_ids,
+            )
+        final_train_ids, validation_ids = train_test_split(
+            remaining_train_ids,
+            test_size=validation_size,
+            random_state=random_state,
+            shuffle=True,
+        )
+        resolved_train_ids = tuple(sorted(int(value) for value in final_train_ids))
+        resolved_validation_ids = tuple(sorted(int(value) for value in validation_ids))
+        if not resolved_train_ids or not resolved_validation_ids:
+            raise ValueError(
+                "Recommender instance split must produce non-empty train and validation partitions "
+                "when validation_size is enabled."
+            )
     return RecommenderInstanceSplit(
         train_instance_ids=resolved_train_ids,
+        validation_instance_ids=resolved_validation_ids,
         test_instance_ids=resolved_test_ids,
     )
+
+
+def _is_disabled_split_size(value: float | int | None) -> bool:
+    if value is None:
+        return True
+    return float(value) <= 0.0
 
 
 def build_pairwise_recommender_data(

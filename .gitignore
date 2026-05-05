@@ -20,7 +20,8 @@ results
 .env
 job_launcher
 logs
-notebooks/recommender_evaluation_outputs*
-./*.ipynb_checkpoints
-recommender_evaluation_*
+notebooks/artifacts
+notebooks/.ipynb_checkpoints
+# recommender_evaluation_*
 *.pdf
+tracker

@@ -11,7 +11,14 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from fed_perso_xai.fl.client import FederatedPairwiseRecommenderClient, RecommenderClientData
+from fed_perso_xai.fl.client import (
+    FederatedPairwiseRecommenderClient,
+    RecommenderClientData,
+    SECURE_TOTAL_EXAMPLES_FIXED_KEY,
+    SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY,
+    SecurePayloadClippingSummary,
+    build_secure_aggregation_client_spec,
+)
 from fed_perso_xai.fl.simulation import (
     ClientApp,
     ServerApp,
@@ -25,11 +32,9 @@ from fed_perso_xai.fl.simulation import (
 from fed_perso_xai.fl.strategy import FederatedRunRecorder, StrategyFactory, create_strategy_factory
 from fed_perso_xai.recommender import (
     PairwiseLogisticConfig,
-    create_recommender,
     initialize_recommender_parameters,
 )
 from fed_perso_xai.recommender.clustering import (
-    ClientSideRandomProjector,
     IdentityProjectionSpec,
     PCAProjectionSpec,
     RecommenderWeightVectorExtractor,
@@ -131,6 +136,125 @@ def _count_assignment_changes(
         int(previous_assignments[client_id]) != int(current_assignments[client_id]) for client_id in shared_clients
     )
     return int(changed), int(len(shared_clients))
+
+
+def _align_distance_matrix_to_stable_labels(
+    *,
+    distance_matrix: np.ndarray,
+    label_alignment: Mapping[int, int],
+    cluster_count: int,
+) -> np.ndarray:
+    """Reorder raw cluster-distance columns into stable cluster-id order."""
+
+    raw = np.asarray(distance_matrix, dtype=np.float64)
+    if raw.ndim != 2:
+        raise ValueError("distance_matrix must be a 2D array.")
+    if raw.shape[1] != int(cluster_count):
+        raise ValueError(f"Expected {cluster_count} distance columns, got {raw.shape[1]}.")
+    aligned = np.empty_like(raw, dtype=np.float64)
+    for raw_cluster_id in range(int(cluster_count)):
+        stable_cluster_id = int(label_alignment.get(raw_cluster_id, raw_cluster_id))
+        aligned[:, stable_cluster_id] = raw[:, raw_cluster_id]
+    return aligned
+
+
+def _apply_assignment_hysteresis(
+    *,
+    previous_assignments: Mapping[str, int],
+    proposed_assignments: Mapping[str, int],
+    aligned_distance_matrix: np.ndarray,
+    ordered_client_ids: Sequence[str],
+    assignment_margin: float,
+) -> tuple[dict[str, int], int]:
+    """Keep previous cluster ids unless the new cluster is meaningfully closer."""
+
+    margin = float(assignment_margin)
+    if margin <= 0.0:
+        return {client_id: int(cluster_id) for client_id, cluster_id in proposed_assignments.items()}, 0
+
+    distances = np.asarray(aligned_distance_matrix, dtype=np.float64)
+    if distances.ndim != 2:
+        raise ValueError("aligned_distance_matrix must be a 2D array.")
+    if distances.shape[0] != len(ordered_client_ids):
+        raise ValueError(
+            "aligned_distance_matrix row count must match the number of ordered client ids."
+        )
+
+    adjusted_assignments: dict[str, int] = {}
+    retained_count = 0
+    cluster_count = int(distances.shape[1])
+    for row_index, client_id in enumerate(ordered_client_ids):
+        proposed_cluster_id = int(proposed_assignments[client_id])
+        previous_cluster_id = previous_assignments.get(client_id)
+        if previous_cluster_id is None:
+            adjusted_assignments[client_id] = proposed_cluster_id
+            continue
+        previous_cluster_id = int(previous_cluster_id)
+        if (
+            previous_cluster_id == proposed_cluster_id
+            or previous_cluster_id < 0
+            or previous_cluster_id >= cluster_count
+        ):
+            adjusted_assignments[client_id] = proposed_cluster_id
+            continue
+        old_distance = float(distances[row_index, previous_cluster_id])
+        new_distance = float(distances[row_index, proposed_cluster_id])
+        if new_distance < old_distance * (1.0 - margin):
+            adjusted_assignments[client_id] = proposed_cluster_id
+            continue
+        adjusted_assignments[client_id] = previous_cluster_id
+        retained_count += 1
+    return adjusted_assignments, int(retained_count)
+
+
+def _summarize_secure_clipping(
+    client_summaries: Mapping[str, SecurePayloadClippingSummary],
+) -> dict[str, Any] | None:
+    clipped_clients = [
+        {
+            "client_id": str(client_id),
+            "clip_threshold_abs": (
+                None
+                if summary.clip_threshold_abs is None
+                else float(summary.clip_threshold_abs)
+            ),
+            "raw_weighted_payload_max_abs": float(summary.raw_weighted_payload_max_abs),
+            "effective_weighted_payload_max_abs": float(
+                summary.effective_weighted_payload_max_abs
+            ),
+            "raw_max_component_value": float(summary.raw_max_component_value),
+            "clipped_max_component_value": float(summary.clipped_max_component_value),
+            "clipped_component_count": int(summary.clipped_component_count),
+            "total_component_count": int(summary.total_component_count),
+            "clipped_fraction": float(summary.clipped_fraction),
+            "total_clipping_l1": float(summary.total_clipping_l1),
+            "max_clipping_delta_abs": float(summary.max_clipping_delta_abs),
+        }
+        for client_id, summary in client_summaries.items()
+        if summary.clip_applied
+    ]
+    if not clipped_clients:
+        return None
+    return {
+        "applied_client_count": int(len(clipped_clients)),
+        "total_client_count": int(len(client_summaries)),
+        "max_raw_weighted_payload_abs": float(
+            max(item["raw_weighted_payload_max_abs"] for item in clipped_clients)
+        ),
+        "max_effective_weighted_payload_abs": float(
+            max(item["effective_weighted_payload_max_abs"] for item in clipped_clients)
+        ),
+        "total_clipped_components": int(
+            sum(item["clipped_component_count"] for item in clipped_clients)
+        ),
+        "total_components": int(
+            sum(item["total_component_count"] for item in clipped_clients)
+        ),
+        "total_clipping_l1": float(
+            sum(item["total_clipping_l1"] for item in clipped_clients)
+        ),
+        "clients": clipped_clients,
+    }
 
 
 def run_federated_recommender_training(
@@ -273,6 +397,18 @@ def _run_flower_recommender_simulation(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    # TODO: For mathematical correctness we derive client example counts directly
+    # from the in-memory simulation datasets. Refactor this to collect counts from
+    # clients during an initial handshake/round so the secure-normalization flow
+    # matches a real federated deployment more closely.
+    recorder.client_example_counts = {
+        str(dataset.client_id): int(dataset.y_train.shape[0])
+        for dataset in client_datasets
+    }
+    recorder.total_client_examples = int(
+        sum(int(dataset.y_train.shape[0]) for dataset in client_datasets)
+    )
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
 
     def client_fn(context: Any):
@@ -282,6 +418,7 @@ def _run_flower_recommender_simulation(
             model_config=model_config,
             seed=config.seed,
             recommender_type=config.recommender_type,
+            secure_aggregation=secure_client_spec,
         )
         return client.to_client()
 
@@ -324,13 +461,26 @@ def _run_debug_sequential_recommender_runtime(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    # TODO: For mathematical correctness we derive client example counts directly
+    # from the in-memory simulation datasets. Refactor this to collect counts from
+    # clients during an initial handshake/round so the secure-normalization flow
+    # matches a real federated deployment more closely.
+    recorder.client_example_counts = {
+        str(dataset.client_id): int(dataset.y_train.shape[0])
+        for dataset in client_datasets
+    }
+    recorder.total_client_examples = int(
+        sum(int(dataset.y_train.shape[0]) for dataset in client_datasets)
+    )
     strategy = strategy_factory.create(initial_parameters, recorder)
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     clients = [
         FederatedPairwiseRecommenderClient(
             data=dataset,
             model_config=model_config,
             seed=config.seed,
             recommender_type=config.recommender_type,
+            secure_aggregation=secure_client_spec,
         )
         for dataset in client_datasets
     ]
@@ -344,9 +494,18 @@ def _run_debug_sequential_recommender_runtime(
             minimum=min(config.min_available_clients, len(clients)),
         )
         fit_indices = rng.choice(len(clients), size=fit_sample_size, replace=False)
+        fit_client_ids = [str(client_datasets[int(index)].client_id) for index in fit_indices]
+        fit_config = (
+            strategy._build_fit_config_for_client_ids(server_round, fit_client_ids)
+            if hasattr(strategy, "_build_fit_config_for_client_ids")
+            else {"server_round": int(server_round)}
+        )
         fit_results = []
         for client_index in fit_indices:
-            updated_parameters, num_examples, metrics = clients[client_index].fit(parameters, {})
+            updated_parameters, num_examples, metrics = clients[client_index].fit(
+                parameters,
+                dict(fit_config),
+            )
             fit_results.append(
                 (
                     None,
@@ -409,9 +568,19 @@ def _run_clustered_recommender_training(
         recommender_type=config.recommender_type,
     )
     extractor = RecommenderWeightVectorExtractor()
-    projector = ClientSideRandomProjector(config)
     clusterer = SecureKMeansClusterer(config)
     secure_aggregator = SecureClusterModelAggregator(config)
+    secure_client_spec = build_secure_aggregation_client_spec(config, force_enabled=True)
+    clients_by_name = {
+        dataset.client_name: FederatedPairwiseRecommenderClient(
+            data=dataset,
+            model_config=model_config,
+            seed=config.seed,
+            recommender_type=config.recommender_type,
+            secure_aggregation=secure_client_spec,
+        )
+        for dataset in client_datasets
+    }
     previous_assignments: dict[str, int] = {}
     warmup_rounds = int(clustering_config.warmup_rounds)
     freeze_pca_after_warmup = bool(clustering_config.freeze_pca_after_warmup)
@@ -422,6 +591,11 @@ def _run_clustered_recommender_training(
         cluster_id: [np.asarray(parameter, dtype=np.float64).copy() for parameter in shared_global_parameters]
         for cluster_id in range(clustering_config.k)
     }
+    # Cluster membership is unknown before client encoding, so for the current
+    # full-participation clustered runtime we normalize each client update by
+    # the global round total first, then restore the usual per-cluster weighted
+    # average after secure reconstruction using `global_total / cluster_total`.
+    total_round_examples = int(sum(int(dataset.y_train.shape[0]) for dataset in client_datasets))
     round_history: list[dict[str, object]] = []
     clustered_rounds: list[ClusteredRoundResult] = []
 
@@ -435,20 +609,44 @@ def _run_clustered_recommender_training(
         )
 
     LOGGER.info(
-        "Starting clustered recommender training clients=%s rounds=%s clusters=%s warmup_rounds=%s freeze_pca_after_warmup=%s recommender_type=%s",
+        "Starting clustered recommender training clients=%s rounds=%s clusters=%s representation=%s warmup_rounds=%s freeze_pca_after_warmup=%s recommender_type=%s",
         len(client_datasets),
         config.rounds,
         clustering_config.k,
+        clustering_config.representation,
         warmup_rounds,
         freeze_pca_after_warmup,
         config.recommender_type,
     )
 
     for server_round in range(1, config.rounds + 1):
-        local_parameters: dict[str, list[np.ndarray]] = {}
+        encoded_updates: dict[str, Any] = {}
+        raw_clustering_vectors: dict[str, np.ndarray] = {}
+        client_weighted_payload_bounds: dict[str, float] = {}
+        client_clipping_summaries: dict[str, SecurePayloadClippingSummary] = {}
         local_weights: dict[str, int] = {}
         train_losses: dict[str, float] = {}
         is_warmup_round = server_round <= warmup_rounds
+        projection_fitted_this_round = False
+        projection_server_observes_raw_weights = False
+        projection_spec: PCAProjectionSpec | IdentityProjectionSpec | None = None
+        initial_reduced_vectors: np.ndarray | None = None
+
+        if not is_warmup_round:
+            if not use_pca:
+                projection_spec = build_identity_projection_spec(
+                    input_dimension=int(extractor.flatten(shared_global_parameters).shape[0])
+                )
+                projection_generation_mode = "identity_no_projection"
+            elif freeze_pca_after_warmup and frozen_projection_spec is not None:
+                projection_spec = frozen_projection_spec
+                projection_generation_mode = "frozen_after_warmup_reuse"
+            else:
+                projection_generation_mode = (
+                    "server_fit_once_after_warmup_then_frozen"
+                    if freeze_pca_after_warmup
+                    else "server_fit_from_centered_local_models_per_round"
+                )
 
         for dataset in client_datasets:
             client_name = dataset.client_name
@@ -459,24 +657,52 @@ def _run_clustered_recommender_training(
                     previous_assignments.get(client_name, 0),
                     shared_global_parameters,
                 )
-            fitted_parameters, train_loss = _fit_local_recommender(
-                dataset=dataset,
-                model_config=model_config,
-                recommender_type=config.recommender_type,
-                seed=config.seed,
-                base_parameters=starting_parameters,
+            client_update = clients_by_name[client_name].fit_clustered(
+                starting_parameters,
+                (
+                    {
+                        "server_round": int(server_round),
+                        SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY: float(total_round_examples),
+                        SECURE_TOTAL_EXAMPLES_FIXED_KEY: 1,
+                    }
+                    if int(server_round) == 1
+                    else {"server_round": int(server_round)}
+                ),
+                representation=clustering_config.representation,
+                normalize_vector=bool(clustering_config.normalize_clustering_vector),
+                normalization_mode=str(clustering_config.clustering_normalization_mode),
+                delta_over_base_norm=bool(clustering_config.delta_over_base_norm),
+                include_raw_clustering_vector=(not is_warmup_round and projection_spec is None),
             )
-            local_parameters[client_name] = fitted_parameters
-            local_weights[client_name] = int(dataset.y_train.shape[0])
-            train_losses[client_name] = float(train_loss)
+            encoded_updates[client_name] = client_update.encoded_model_update
+            client_weighted_payload_bounds[client_name] = float(client_update.weighted_payload_max_abs)
+            client_clipping_summaries[client_name] = client_update.clipping_summary
+            local_weights[client_name] = int(client_update.num_examples)
+            train_losses[client_name] = float(client_update.train_loss)
+            if client_update.raw_clustering_vector is not None:
+                raw_clustering_vectors[client_name] = np.asarray(
+                    client_update.raw_clustering_vector,
+                    dtype=np.float64,
+                ).copy()
 
         weighted_train_loss = _weighted_scalar_average(train_losses, local_weights)
+        clipping_summary = _summarize_secure_clipping(client_clipping_summaries)
         if is_warmup_round:
-            ordered_client_names = sorted(local_parameters)
-            shared_global_parameters = weighted_average_parameter_sets(
-                [local_parameters[client_name] for client_name in ordered_client_names],
-                [local_weights[client_name] for client_name in ordered_client_names],
+            aggregated_global = secure_aggregator.aggregate(
+                client_updates=encoded_updates,
+                client_weights=local_weights,
+                client_weighted_payload_bounds=client_weighted_payload_bounds,
+                assignments={client_name: 0 for client_name in encoded_updates},
+                round_id=server_round,
+                cluster_count=1,
+                fallback_parameters={0: shared_global_parameters},
+                total_examples_normalizer=float(total_round_examples),
+                min_contributors=1,
             )
+            shared_global_parameters = [
+                np.asarray(parameter, dtype=np.float64).copy()
+                for parameter in aggregated_global[0].parameters
+            ]
             current_cluster_models = {
                 cluster_id: [np.asarray(parameter, dtype=np.float64).copy() for parameter in shared_global_parameters]
                 for cluster_id in range(clustering_config.k)
@@ -496,29 +722,24 @@ def _run_clustered_recommender_training(
                     "aggregation": {
                         "mode": "warmup_global",
                         "num_clusters": int(clustering_config.k),
-                        "num_contributors": int(len(local_parameters)),
+                        "num_contributors": int(len(encoded_updates)),
+                        "clipping": clipping_summary,
                     },
                     "evaluate_skipped": True,
                 }
             )
             continue
 
-        ordered_local_parameters = {
-            client_name: local_parameters[client_name]
-            for client_name in sorted(local_parameters)
-        }
-        projection_fitted_this_round = False
-        if not use_pca:
-            projection_dimension = int(extractor.flatten(next(iter(ordered_local_parameters.values()))).shape[0])
-            projection_spec = build_identity_projection_spec(input_dimension=projection_dimension)
-            projection_generation_mode = "identity_no_projection"
-            projection_server_observes_raw_weights = False
-        elif freeze_pca_after_warmup and frozen_projection_spec is not None:
-            projection_spec = frozen_projection_spec
-            projection_generation_mode = "frozen_after_warmup_reuse"
-            projection_server_observes_raw_weights = False
-        else:
-            _, flattened_vectors = extractor.flatten_many(ordered_local_parameters)
+        ordered_client_names = sorted(encoded_updates)
+        if projection_spec is None:
+            ordered_clustering_vectors = {
+                client_name: raw_clustering_vectors[client_name]
+                for client_name in ordered_client_names
+            }
+            flattened_vectors = np.stack(
+                [ordered_clustering_vectors[client_name] for client_name in ordered_client_names],
+                axis=0,
+            )
             projection_spec = build_centered_pca_projection_spec(
                 flattened_vectors=flattened_vectors,
                 requested_components=clustering_config.pca_components,
@@ -531,14 +752,19 @@ def _run_clustered_recommender_training(
             else:
                 projection_generation_mode = "server_fit_from_centered_local_models_per_round"
             projection_server_observes_raw_weights = True
+            initial_reduced_vectors = np.stack(
+                [
+                    projection_spec.transform(ordered_clustering_vectors[client_name])
+                    for client_name in ordered_client_names
+                ],
+                axis=0,
+            )
         shared_reduced_vectors = [
-            projector.build_private_reduced_vector(
-                client_id=client_name,
-                parameters=ordered_local_parameters[client_name],
+            clients_by_name[client_name].build_last_private_clustering_vector(
                 projection_spec=projection_spec,
                 round_id=server_round,
             )
-            for client_name in ordered_local_parameters
+            for client_name in ordered_client_names
         ]
         clustering_seed = int(config.seed + server_round - 1)
         assignments_result = clusterer.cluster(
@@ -546,6 +772,7 @@ def _run_clustered_recommender_training(
             projection_spec=projection_spec,
             seed=clustering_seed,
             clustering_config=clustering_config,
+            initial_vectors=initial_reduced_vectors,
         )
         raw_assignments = {
             shared_vector.client_id: int(label)
@@ -559,21 +786,38 @@ def _run_clustered_recommender_training(
             current_assignments=raw_assignments,
             cluster_count=clustering_config.k,
         )
-        assignments = {
+        raw_aligned_assignments = {
             client_id: int(label_alignment[cluster_id]) for client_id, cluster_id in raw_assignments.items()
         }
+        hysteresis_retained_client_count = 0
+        assignments = dict(raw_aligned_assignments)
+        if assignments_result.distance_matrix is not None:
+            aligned_distance_matrix = _align_distance_matrix_to_stable_labels(
+                distance_matrix=assignments_result.distance_matrix,
+                label_alignment=label_alignment,
+                cluster_count=clustering_config.k,
+            )
+            assignments, hysteresis_retained_client_count = _apply_assignment_hysteresis(
+                previous_assignments=previous_assignments,
+                proposed_assignments=raw_aligned_assignments,
+                aligned_distance_matrix=aligned_distance_matrix,
+                ordered_client_ids=ordered_client_names,
+                assignment_margin=float(clustering_config.assignment_margin),
+            )
         cluster_sizes = summarize_cluster_sizes(assignments, clustering_config.k)
         changed_clients, compared_clients = _count_assignment_changes(
             previous_assignments=previous_assignments,
             current_assignments=assignments,
         )
         aggregated_clusters = secure_aggregator.aggregate(
-            client_parameters=local_parameters,
+            client_updates=encoded_updates,
             client_weights=local_weights,
+            client_weighted_payload_bounds=client_weighted_payload_bounds,
             assignments=assignments,
             round_id=server_round,
             cluster_count=clustering_config.k,
             fallback_parameters=current_cluster_models,
+            total_examples_normalizer=float(total_round_examples),
         )
         current_cluster_models = {
             cluster_id: [
@@ -604,7 +848,8 @@ def _run_clustered_recommender_training(
                     "mode": "clustered_secure",
                     "num_clusters": int(clustering_config.k),
                     "cluster_sizes": dict(cluster_sizes),
-                    "num_contributors": int(len(local_parameters)),
+                    "num_contributors": int(len(encoded_updates)),
+                    "clipping": clipping_summary,
                 },
                 "evaluate_skipped": True,
             }
@@ -616,6 +861,12 @@ def _run_clustered_recommender_training(
                 cluster_sizes=dict(cluster_sizes),
                 projection_metadata={
                     **projection_spec.to_metadata(),
+                    "clustering_representation": str(clustering_config.representation),
+                    "normalize_clustering_vector": bool(clustering_config.normalize_clustering_vector),
+                    "clustering_normalization_mode": str(clustering_config.clustering_normalization_mode),
+                    "delta_over_base_norm": bool(clustering_config.delta_over_base_norm),
+                    "assignment_margin": float(clustering_config.assignment_margin),
+                    "num_restarts": int(clustering_config.num_restarts),
                     "projection_generation_mode": projection_generation_mode,
                     "server_observes_raw_weights_during_projection_fit": projection_server_observes_raw_weights,
                     "projection_fit_round_id": int(server_round) if projection_fitted_this_round else None,
@@ -630,6 +881,8 @@ def _run_clustered_recommender_training(
                         for cluster_id, aligned_cluster_id in label_alignment.items()
                     },
                     "label_alignment_overlap_count": int(label_alignment_overlap),
+                    "assignment_margin": float(clustering_config.assignment_margin),
+                    "hysteresis_retained_client_count": int(hysteresis_retained_client_count),
                     "initial_centroid_indices": [
                         int(value) for value in assignments_result.initial_centroid_indices
                     ],
@@ -682,6 +935,12 @@ def _run_clustered_recommender_training(
         "rounds_completed": len(round_history),
         "clustered": True,
         "cluster_count": int(clustering_config.k),
+        "clustering_representation": str(clustering_config.representation),
+        "normalize_clustering_vector": bool(clustering_config.normalize_clustering_vector),
+        "clustering_normalization_mode": str(clustering_config.clustering_normalization_mode),
+        "delta_over_base_norm": bool(clustering_config.delta_over_base_norm),
+        "assignment_margin": float(clustering_config.assignment_margin),
+        "num_restarts": int(clustering_config.num_restarts),
         "warmup_rounds": warmup_rounds,
         "freeze_pca_after_warmup": freeze_pca_after_warmup,
         "server_observes_raw_weights_during_clustering": server_observes_raw_weights_during_clustering,
@@ -701,29 +960,6 @@ def _run_clustered_recommender_training(
         final_cluster_assignments=final_cluster_assignments,
         final_cluster_parameters=final_cluster_parameters,
     )
-
-
-def _fit_local_recommender(
-    *,
-    dataset: RecommenderClientData,
-    model_config: PairwiseLogisticConfig,
-    recommender_type: str,
-    seed: int,
-    base_parameters: Sequence[np.ndarray],
-) -> tuple[list[np.ndarray], float]:
-    model = create_recommender(
-        recommender_type=recommender_type,
-        n_features=dataset.X_train.shape[1],
-        config=model_config,
-    )
-    model.set_parameters(base_parameters)
-    train_loss = model.fit(
-        dataset.X_train,
-        dataset.y_train,
-        seed=int(seed + dataset.client_id),
-    )
-    return model.get_parameters(), float(train_loss)
-
 
 def _weighted_scalar_average(
     values: Mapping[str, float],

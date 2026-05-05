@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_recommender_pipeline.sh RUN_ID SELECTION_ID [PERSONA]
+  scripts/run_recommender_pipeline.sh RUN_ID SELECTION_ID [LABEL_NAMESPACE]
 
 Environment variables:
   PYTHON=python                         Python executable to use.
@@ -15,7 +15,16 @@ Environment variables:
                                         Label artifact name expected by training/eval.
   SIMULATOR=dirichlet_persona           Labeling simulator name.
   LABEL_SEED=1729                       RNG seed for simulated pairwise labels.
-  PERSONA_SEED=42                       RNG seed for persona weight sampling.
+  PERSONA_SEED=42                       RNG seed for persona assignment / metric sampling.
+  INSTANCE_TEST_SIZE=0.2               Held-out recommender test split size over selected instances.
+  INSTANCE_VALIDATION_SIZE=0.1         Validation split size over the remaining post-test instances.
+  PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
+                                        Labeling persona assignment policy.
+  PERSONA_ASSIGNMENT_ALPHA=             Optional Dirichlet concentration for client-level persona assignment.
+  FIXED_PERSONA=lay                     Bundled persona config used only when PERSONA_ASSIGNMENT_POLICY=fixed.
+  LABEL_NAMESPACE=                      Shared label namespace used by label/train/eval.
+                                        Defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise.
+  PERSONA=                              Deprecated alias for LABEL_NAMESPACE.
   TRAIN_ROUNDS=10                       Federated recommender rounds.
   TRAIN_EPOCHS=5                        Local recommender epochs.
   TRAIN_BATCH_SIZE=64                   Local recommender batch size.
@@ -38,11 +47,19 @@ Environment variables:
   SECURE_PRIVACY_THRESHOLD=2            Secure aggregation privacy threshold.
   SECURE_RECONSTRUCTION_THRESHOLD=      Optional secure aggregation reconstruction threshold.
   SECURE_FIELD_MODULUS=2147483647       Secure aggregation field modulus.
-  SECURE_QUANTIZATION_SCALE=65536       Secure aggregation quantization scale.
+  SECURE_QUANTIZATION_SCALE=8192        Secure aggregation quantization scale.
   SECURE_SEED=0                         Secure aggregation RNG seed.
+  SECURE_CLIP_WEIGHTED_PAYLOAD=1        Clip weighted secure payloads before quantization when set to 1.
+  SECURE_CLIP_BUDGET_FRACTION=0.95      Fraction of the aggregate field budget reserved for clipping.
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
+  CLUSTERING_REPRESENTATION=model       Cluster either full local models or per-round deltas: model or delta.
+  CLUSTERING_NORMALIZE_VECTOR=1         Pass --no-clustering-normalize-vector when set to 0.
+  CLUSTERING_NORMALIZATION_MODE=l2      Client-side clustering vector normalization mode.
+  CLUSTERING_DELTA_OVER_BASE_NORM=1     When clustering deltas, normalize by the starting model norm.
+  CLUSTERING_ASSIGNMENT_MARGIN=0.05     Require a new cluster to be this much closer before switching.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
+  CLUSTERING_NUM_RESTARTS=5             Number of K-means restarts per clustered round.
   CLUSTERING_ENABLE_PCA=1              Pass --no-clustering-enable-pca when set to 0.
   CLUSTERING_PCA_COMPONENTS=8           PCA components for clustered training.
   CLUSTERING_WARMUP_ROUNDS=0            Initial global-only rounds before clustering starts.
@@ -70,7 +87,23 @@ fi
 
 RUN_ID="$1"
 SELECTION_ID="$2"
-PERSONA="${3:-${PERSONA:-lay}}"
+LABEL_NAMESPACE_ARG="${3:-}"
+PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
+FIXED_PERSONA="${FIXED_PERSONA:-lay}"
+LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
+LEGACY_PERSONA_NAMESPACE="${PERSONA:-}"
+
+if [[ -n "$LABEL_NAMESPACE_ARG" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ARG"
+elif [[ -n "$LABEL_NAMESPACE_ENV" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ENV"
+elif [[ -n "$LEGACY_PERSONA_NAMESPACE" ]]; then
+  LABEL_NAMESPACE="$LEGACY_PERSONA_NAMESPACE"
+elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_NAMESPACE="$FIXED_PERSONA"
+else
+  LABEL_NAMESPACE="dirichlet_sampled"
+fi
 
 CLIENTS="${CLIENTS:-all}"
 CONTEXT_FILENAME="${CONTEXT_FILENAME:-candidate_context.parquet}"
@@ -78,6 +111,9 @@ LABEL_FILENAME="${LABEL_FILENAME:-pairwise_labels.parquet}"
 SIMULATOR="${SIMULATOR:-dirichlet_persona}"
 LABEL_SEED="${LABEL_SEED:-1729}"
 PERSONA_SEED="${PERSONA_SEED:-42}"
+INSTANCE_TEST_SIZE="${INSTANCE_TEST_SIZE:-0.2}"
+INSTANCE_VALIDATION_SIZE="${INSTANCE_VALIDATION_SIZE:-0.1}"
+PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-}"
 TRAIN_ROUNDS="${TRAIN_ROUNDS:-10}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
@@ -100,11 +136,19 @@ SECURE_NUM_HELPERS="${SECURE_NUM_HELPERS:-5}"
 SECURE_PRIVACY_THRESHOLD="${SECURE_PRIVACY_THRESHOLD:-2}"
 SECURE_RECONSTRUCTION_THRESHOLD="${SECURE_RECONSTRUCTION_THRESHOLD:-}"
 SECURE_FIELD_MODULUS="${SECURE_FIELD_MODULUS:-2147483647}"
-SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-65536}"
+SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-8192}"
 SECURE_SEED="${SECURE_SEED:-0}"
+SECURE_CLIP_WEIGHTED_PAYLOAD="${SECURE_CLIP_WEIGHTED_PAYLOAD:-1}"
+SECURE_CLIP_BUDGET_FRACTION="${SECURE_CLIP_BUDGET_FRACTION:-0.95}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
+CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
+CLUSTERING_NORMALIZE_VECTOR="${CLUSTERING_NORMALIZE_VECTOR:-1}"
+CLUSTERING_NORMALIZATION_MODE="${CLUSTERING_NORMALIZATION_MODE:-l2}"
+CLUSTERING_DELTA_OVER_BASE_NORM="${CLUSTERING_DELTA_OVER_BASE_NORM:-1}"
+CLUSTERING_ASSIGNMENT_MARGIN="${CLUSTERING_ASSIGNMENT_MARGIN:-0.05}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
+CLUSTERING_NUM_RESTARTS="${CLUSTERING_NUM_RESTARTS:-5}"
 CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA:-1}"
 CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
 CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS:-0}"
@@ -123,6 +167,45 @@ if [[ -z "${PYTHON:-}" ]]; then
   else
     echo "ERROR: no Python executable found. Set PYTHON=/path/to/python." >&2
     exit 1
+  fi
+fi
+
+if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
+  echo "ERROR: PERSONA_ASSIGNMENT_POLICY must be fixed or dirichlet_sampled." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_REPRESENTATION" =~ ^(model|delta)$ ]]; then
+  echo "ERROR: CLUSTERING_REPRESENTATION must be model or delta." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NORMALIZE_VECTOR" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_NORMALIZE_VECTOR must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NORMALIZATION_MODE" =~ ^(l2)$ ]]; then
+  echo "ERROR: CLUSTERING_NORMALIZATION_MODE must be l2." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_DELTA_OVER_BASE_NORM" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_DELTA_OVER_BASE_NORM must be 0 or 1." >&2
+  exit 2
+fi
+if ! [[ "$CLUSTERING_ASSIGNMENT_MARGIN" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($CLUSTERING_ASSIGNMENT_MARGIN >= 0 && $CLUSTERING_ASSIGNMENT_MARGIN < 1)}")" != "1" ]]; then
+  echo "ERROR: CLUSTERING_ASSIGNMENT_MARGIN must be a number in [0, 1)." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NUM_RESTARTS" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_NUM_RESTARTS" -lt 1 ]]; then
+  echo "ERROR: CLUSTERING_NUM_RESTARTS must be a positive integer." >&2
+  exit 2
+fi
+
+if [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  FIXED_PERSONA_CONFIG_PATH="$PROJECT_ROOT/src/fed_perso_xai/recommender/configs/${FIXED_PERSONA}.yaml"
+  if [[ ! -f "$FIXED_PERSONA_CONFIG_PATH" ]]; then
+    echo "ERROR: FIXED_PERSONA='$FIXED_PERSONA' does not resolve to a bundled persona config at $FIXED_PERSONA_CONFIG_PATH." >&2
+    exit 2
   fi
 fi
 
@@ -147,8 +230,28 @@ fi
 TRAIN_EXTRA+=(--secure-field-modulus "$SECURE_FIELD_MODULUS")
 TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
+if [[ "$SECURE_CLIP_WEIGHTED_PAYLOAD" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-secure-clip-weighted-payload)
+else
+  TRAIN_EXTRA+=(--secure-clip-weighted-payload)
+fi
+TRAIN_EXTRA+=(--secure-clip-budget-fraction "$SECURE_CLIP_BUDGET_FRACTION")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
+TRAIN_EXTRA+=(--clustering-representation "$CLUSTERING_REPRESENTATION")
+if [[ "$CLUSTERING_NORMALIZE_VECTOR" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-clustering-normalize-vector)
+else
+  TRAIN_EXTRA+=(--clustering-normalize-vector)
+fi
+TRAIN_EXTRA+=(--clustering-normalization-mode "$CLUSTERING_NORMALIZATION_MODE")
+if [[ "$CLUSTERING_DELTA_OVER_BASE_NORM" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-clustering-delta-over-base-norm)
+else
+  TRAIN_EXTRA+=(--clustering-delta-over-base-norm)
+fi
+TRAIN_EXTRA+=(--clustering-assignment-margin "$CLUSTERING_ASSIGNMENT_MARGIN")
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
+TRAIN_EXTRA+=(--clustering-num-restarts "$CLUSTERING_NUM_RESTARTS")
 if [[ "$CLUSTERING_ENABLE_PCA" == "0" ]]; then
   TRAIN_EXTRA+=(--no-clustering-enable-pca)
 else
@@ -172,6 +275,18 @@ if [[ -n "$EVAL_OUTPUT" ]]; then
   EVAL_EXTRA+=(--output "$EVAL_OUTPUT")
 fi
 
+LABEL_EXTRA=(
+  --persona-assignment-policy "$PERSONA_ASSIGNMENT_POLICY"
+  --output-persona "$LABEL_NAMESPACE"
+)
+if [[ -n "$PERSONA_ASSIGNMENT_ALPHA" ]]; then
+  LABEL_EXTRA+=(--persona-assignment-alpha "$PERSONA_ASSIGNMENT_ALPHA")
+fi
+LABEL_PERSONA_ARGS=()
+if [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_PERSONA_ARGS+=(--persona "$FIXED_PERSONA")
+fi
+
 if [[ "$SKIP_LABELING" == "1" ]]; then
   echo "==> Skipping recommender labeling"
 else
@@ -179,20 +294,23 @@ else
   "$PYTHON" -m fed_perso_xai label-recommender-context \
     --run-id "$RUN_ID" \
     --selection "$SELECTION_ID" \
-    --persona "$PERSONA" \
+    "${LABEL_PERSONA_ARGS[@]}" \
     --simulator "$SIMULATOR" \
     --clients "$CLIENTS" \
     --context-filename "$CONTEXT_FILENAME" \
     --label-filename "$LABEL_FILENAME" \
     --seed "$PERSONA_SEED" \
-    --label-seed "$LABEL_SEED"
+    --label-seed "$LABEL_SEED" \
+    --instance-test-size "$INSTANCE_TEST_SIZE" \
+    --instance-validation-size "$INSTANCE_VALIDATION_SIZE" \
+    "${LABEL_EXTRA[@]}"
 fi
 
 echo "==> Training federated recommender"
 "$PYTHON" -m fed_perso_xai train-recommender-federated \
   --run-id "$RUN_ID" \
   --selection "$SELECTION_ID" \
-  --persona "$PERSONA" \
+  --persona "$LABEL_NAMESPACE" \
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
   --label-filename "$LABEL_FILENAME" \
@@ -218,7 +336,7 @@ echo "==> Evaluating federated recommender"
 "$PYTHON" -m fed_perso_xai evaluate-recommender \
   --run-id "$RUN_ID" \
   --selection "$SELECTION_ID" \
-  --persona "$PERSONA" \
+  --persona "$LABEL_NAMESPACE" \
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
   --label-filename "$LABEL_FILENAME" \
@@ -229,4 +347,4 @@ echo "==> Evaluating federated recommender"
 echo "==> Recommender pipeline complete"
 echo "Run ID: $RUN_ID"
 echo "Selection: $SELECTION_ID"
-echo "Persona: $PERSONA"
+echo "Label Namespace: $LABEL_NAMESPACE"

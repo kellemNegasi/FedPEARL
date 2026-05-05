@@ -26,7 +26,11 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
     ServerAppComponents = None  # type: ignore[assignment]
     ServerConfig = None  # type: ignore[assignment]
 
-from fed_perso_xai.fl.client import ClientData, FederatedLogisticRegressionClient
+from fed_perso_xai.fl.client import (
+    ClientData,
+    FederatedLogisticRegressionClient,
+    build_secure_aggregation_client_spec,
+)
 from fed_perso_xai.fl.strategy import (
     FederatedRunRecorder,
     StrategyFactory,
@@ -225,6 +229,18 @@ def _run_flower_simulation(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    # TODO: For mathematical correctness we derive client example counts directly
+    # from the in-memory simulation datasets. Refactor this to collect counts from
+    # clients during an initial handshake/round so the secure-normalization flow
+    # matches a real federated deployment more closely.
+    recorder.client_example_counts = {
+        str(dataset.client_id): int(dataset.y_train.shape[0])
+        for dataset in client_datasets
+    }
+    recorder.total_client_examples = int(
+        sum(int(dataset.y_train.shape[0]) for dataset in client_datasets)
+    )
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
 
     def client_fn(context: fl.common.Context):
@@ -235,6 +251,7 @@ def _run_flower_simulation(
             model_config=config.model,
             seed=config.seed,
             prediction_threshold=config.prediction_threshold,
+            secure_aggregation=secure_client_spec,
         )
         return client.to_client()
 
@@ -276,7 +293,19 @@ def _run_debug_sequential_runtime(
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
     require_flower_support()
+    # TODO: For mathematical correctness we derive client example counts directly
+    # from the in-memory simulation datasets. Refactor this to collect counts from
+    # clients during an initial handshake/round so the secure-normalization flow
+    # matches a real federated deployment more closely.
+    recorder.client_example_counts = {
+        str(dataset.client_id): int(dataset.y_train.shape[0])
+        for dataset in client_datasets
+    }
+    recorder.total_client_examples = int(
+        sum(int(dataset.y_train.shape[0]) for dataset in client_datasets)
+    )
     strategy = strategy_factory.create(initial_parameters, recorder)
+    secure_client_spec = build_secure_aggregation_client_spec(config)
     clients = [
         FederatedLogisticRegressionClient(
             data=dataset,
@@ -284,6 +313,7 @@ def _run_debug_sequential_runtime(
             model_config=config.model,
             seed=config.seed,
             prediction_threshold=config.prediction_threshold,
+            secure_aggregation=secure_client_spec,
         )
         for dataset in client_datasets
     ]
@@ -297,9 +327,18 @@ def _run_debug_sequential_runtime(
             minimum=min(config.min_available_clients, len(clients)),
         )
         fit_indices = rng.choice(len(clients), size=fit_sample_size, replace=False)
+        fit_client_ids = [str(client_datasets[int(index)].client_id) for index in fit_indices]
+        fit_config = (
+            strategy._build_fit_config_for_client_ids(server_round, fit_client_ids)
+            if hasattr(strategy, "_build_fit_config_for_client_ids")
+            else {"server_round": int(server_round)}
+        )
         fit_results = []
         for client_index in fit_indices:
-            updated_parameters, num_examples, metrics = clients[client_index].fit(parameters, {})
+            updated_parameters, num_examples, metrics = clients[client_index].fit(
+                parameters,
+                dict(fit_config),
+            )
             fit_results.append(
                 (
                     None,

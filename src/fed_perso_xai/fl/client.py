@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -79,6 +81,73 @@ class SharedParameterPayload:
     total_parameter_count: int
 
 
+@dataclass(frozen=True)
+class SecureAggregationClientSpec:
+    """Client-local secure aggregation settings for encoded helper-share output."""
+
+    enabled: bool = False
+    num_helpers: int = 5
+    privacy_threshold: int = 2
+    reconstruction_threshold: int | None = None
+    field_modulus: int = 2_147_483_647
+    quantization_scale: int = 1 << 16
+    seed: int = 0
+    clip_weighted_payload: bool = False
+    clip_budget_fraction: float = 0.95
+    expected_num_contributors: int = 1
+
+
+@dataclass(frozen=True)
+class SecurePayloadClippingSummary:
+    """Client-local diagnostics for weighted secure payload clipping."""
+
+    clip_enabled: bool
+    clip_applied: bool
+    clip_threshold_abs: float | None
+    raw_weighted_payload_max_abs: float
+    effective_weighted_payload_max_abs: float
+    raw_max_component_value: float
+    clipped_max_component_value: float
+    clipped_component_count: int
+    total_component_count: int
+    clipped_fraction: float
+    total_clipping_l1: float
+    max_clipping_delta_abs: float
+
+
+@dataclass(frozen=True)
+class ClusteredRecommenderClientUpdate:
+    """Client-side clustered training outputs consumed by the coordinator."""
+
+    client_id: str
+    num_examples: int
+    train_loss: float
+    encoded_model_update: Any
+    weighted_payload_max_abs: float
+    clipping_summary: SecurePayloadClippingSummary
+    raw_clustering_vector: np.ndarray | None = None
+
+
+SECURE_PAYLOAD_ENCODING_KEY = "secure_payload_encoding"
+SECURE_PAYLOAD_ENCODING_VALUE = "lcc_helper_shares_v1"
+SECURE_PAYLOAD_LAYOUT_KEY = "secure_payload_layout"
+SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY = "secure_weighted_payload_max_abs"
+SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY = "secure_total_examples_normalizer"
+SECURE_TOTAL_EXAMPLES_FIXED_KEY = "secure_total_examples_fixed"
+SECURE_WEIGHTED_PAYLOAD_RAW_MAX_ABS_KEY = "secure_weighted_payload_raw_max_abs"
+SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY = "secure_weighted_payload_clip_summary"
+SECURE_WEIGHTED_PAYLOAD_CLIP_THRESHOLD_KEY = "secure_weighted_payload_clip_threshold_abs"
+SECURE_WEIGHTED_PAYLOAD_CLIPPED_COMPONENT_COUNT_KEY = "secure_weighted_payload_clipped_component_count"
+SECURE_WEIGHTED_PAYLOAD_TOTAL_COMPONENT_COUNT_KEY = "secure_weighted_payload_total_component_count"
+SECURE_WEIGHTED_PAYLOAD_CLIPPED_FRACTION_KEY = "secure_weighted_payload_clipped_fraction"
+SECURE_WEIGHTED_PAYLOAD_CLIP_TOTAL_L1_KEY = "secure_weighted_payload_clip_total_l1"
+SECURE_WEIGHTED_PAYLOAD_MAX_CLIP_DELTA_KEY = "secure_weighted_payload_max_clip_delta_abs"
+SECURE_WEIGHTED_PAYLOAD_RAW_MAX_COMPONENT_VALUE_KEY = "secure_weighted_payload_raw_max_component_value"
+SECURE_WEIGHTED_PAYLOAD_CLIPPED_MAX_COMPONENT_VALUE_KEY = "secure_weighted_payload_clipped_max_component_value"
+SECURE_WEIGHTED_PAYLOAD_WAS_CLIPPED_KEY = "secure_weighted_payload_was_clipped"
+CLUSTERING_VECTOR_NORMALIZATION_EPS = 1e-12
+
+
 def extract_shared_parameter_payload(parameters: list[np.ndarray]) -> SharedParameterPayload:
     """Return the model tensors that should be aggregated by the server."""
 
@@ -109,6 +178,390 @@ def apply_shared_parameter_payload(
     return merged
 
 
+def build_secure_aggregation_client_spec(
+    training_config: Any,
+    *,
+    force_enabled: bool = False,
+) -> SecureAggregationClientSpec:
+    """Build the secure client spec from a training config-like object."""
+
+    total_clients = max(1, int(getattr(training_config, "num_clients", 1)))
+    fit_fraction = float(getattr(training_config, "fit_fraction", 1.0))
+    min_available_clients = int(getattr(training_config, "min_available_clients", 1))
+    expected_num_contributors = max(
+        1,
+        min(
+            total_clients,
+            max(min_available_clients, int(math.ceil(total_clients * fit_fraction))),
+        ),
+    )
+    return SecureAggregationClientSpec(
+        enabled=bool(force_enabled or getattr(training_config, "secure_aggregation", False)),
+        num_helpers=int(getattr(training_config, "secure_num_helpers")),
+        privacy_threshold=int(getattr(training_config, "secure_privacy_threshold")),
+        reconstruction_threshold=getattr(training_config, "secure_reconstruction_threshold"),
+        field_modulus=int(getattr(training_config, "secure_field_modulus")),
+        quantization_scale=int(getattr(training_config, "secure_quantization_scale")),
+        seed=int(getattr(training_config, "secure_seed")),
+        clip_weighted_payload=bool(getattr(training_config, "secure_clip_weighted_payload", False)),
+        clip_budget_fraction=float(getattr(training_config, "secure_clip_budget_fraction", 0.95)),
+        expected_num_contributors=int(expected_num_contributors),
+    )
+
+
+def serialize_secure_payload_layout(layout: Any) -> str:
+    """Serialize `lcc-lib` flattened tensor layout metadata into a metrics-safe string."""
+
+    shapes = [list(entry.shape) for entry in getattr(layout, "entries")]
+    return json.dumps(shapes, separators=(",", ":"))
+
+
+def deserialize_secure_payload_layout(payload: str) -> Any:
+    """Deserialize secure payload layout metadata produced by `serialize_secure_payload_layout`."""
+
+    from lcc_lib.aggregation.flattening import FlattenedTensorLayout, TensorLayoutEntry
+
+    shape_rows = json.loads(payload)
+    entries = tuple(
+        TensorLayoutEntry(
+            shape=tuple(int(value) for value in shape_row),
+            size=int(np.prod(shape_row, dtype=np.int64)),
+        )
+        for shape_row in shape_rows
+    )
+    return FlattenedTensorLayout(entries=entries)
+
+
+def serialize_secure_payload_clipping_summary(summary: SecurePayloadClippingSummary) -> str:
+    """Serialize secure weighted-payload clipping diagnostics into fit metrics."""
+
+    return json.dumps(
+        {
+            "clip_enabled": bool(summary.clip_enabled),
+            "clip_applied": bool(summary.clip_applied),
+            "clip_threshold_abs": (
+                None
+                if summary.clip_threshold_abs is None
+                else float(summary.clip_threshold_abs)
+            ),
+            "raw_weighted_payload_max_abs": float(summary.raw_weighted_payload_max_abs),
+            "effective_weighted_payload_max_abs": float(summary.effective_weighted_payload_max_abs),
+            "raw_max_component_value": float(summary.raw_max_component_value),
+            "clipped_max_component_value": float(summary.clipped_max_component_value),
+            "clipped_component_count": int(summary.clipped_component_count),
+            "total_component_count": int(summary.total_component_count),
+            "clipped_fraction": float(summary.clipped_fraction),
+            "total_clipping_l1": float(summary.total_clipping_l1),
+            "max_clipping_delta_abs": float(summary.max_clipping_delta_abs),
+        },
+        separators=(",", ":"),
+    )
+
+
+def deserialize_secure_payload_clipping_summary(payload: str) -> SecurePayloadClippingSummary:
+    """Deserialize secure weighted-payload clipping diagnostics from fit metrics."""
+
+    raw = json.loads(payload)
+    clip_threshold_abs = raw.get("clip_threshold_abs")
+    return SecurePayloadClippingSummary(
+        clip_enabled=bool(raw.get("clip_enabled", False)),
+        clip_applied=bool(raw.get("clip_applied", False)),
+        clip_threshold_abs=(
+            None if clip_threshold_abs is None else float(clip_threshold_abs)
+        ),
+        raw_weighted_payload_max_abs=float(raw.get("raw_weighted_payload_max_abs", 0.0)),
+        effective_weighted_payload_max_abs=float(
+            raw.get("effective_weighted_payload_max_abs", 0.0)
+        ),
+        raw_max_component_value=float(raw.get("raw_max_component_value", 0.0)),
+        clipped_max_component_value=float(raw.get("clipped_max_component_value", 0.0)),
+        clipped_component_count=int(raw.get("clipped_component_count", 0)),
+        total_component_count=int(raw.get("total_component_count", 0)),
+        clipped_fraction=float(raw.get("clipped_fraction", 0.0)),
+        total_clipping_l1=float(raw.get("total_clipping_l1", 0.0)),
+        max_clipping_delta_abs=float(raw.get("max_clipping_delta_abs", 0.0)),
+    )
+
+
+def _build_client_secure_encoder(spec: SecureAggregationClientSpec) -> Any:
+    from lcc_lib.aggregation import ClientPayloadEncoder, SecureAggregationConfig
+    from lcc_lib.coding.field_ops import FieldConfig
+    from lcc_lib.coding.share_codec import ShareEncodingConfig
+    from lcc_lib.quantization.quantizer import QuantizationConfig
+
+    return ClientPayloadEncoder(
+        SecureAggregationConfig(
+            field_config=FieldConfig(modulus=spec.field_modulus),
+            quantization=QuantizationConfig(
+                field_modulus=spec.field_modulus,
+                scale=spec.quantization_scale,
+            ),
+            encoding=ShareEncodingConfig(
+                num_helpers=spec.num_helpers,
+                privacy_threshold=spec.privacy_threshold,
+                reconstruction_threshold=spec.reconstruction_threshold,
+                seed=spec.seed,
+            ),
+            compute_mean=False,
+        )
+    )
+
+
+def _max_supported_weighted_payload_abs(spec: SecureAggregationClientSpec) -> float:
+    signed_bound = (int(spec.field_modulus) - 1) // 2
+    return float(signed_bound) / float(spec.quantization_scale)
+
+
+def _resolve_weighted_payload_clip_threshold_abs(
+    spec: SecureAggregationClientSpec,
+) -> float | None:
+    if not spec.clip_weighted_payload:
+        return None
+    max_supported_weighted_abs = _max_supported_weighted_payload_abs(spec)
+    contributors = max(1, int(spec.expected_num_contributors))
+    return (
+        max_supported_weighted_abs
+        * float(spec.clip_budget_fraction)
+        / float(contributors)
+    )
+
+
+def _clip_weighted_secure_payload(
+    *,
+    parameters: list[np.ndarray],
+    weight: int | float,
+    secure_spec: SecureAggregationClientSpec,
+) -> tuple[list[np.ndarray], SecurePayloadClippingSummary]:
+    clip_threshold_abs = _resolve_weighted_payload_clip_threshold_abs(secure_spec)
+    weighted_parameters: list[np.ndarray] = []
+    raw_weighted_payload_max_abs = 0.0
+    effective_weighted_payload_max_abs = 0.0
+    raw_max_component_value = 0.0
+    clipped_max_component_value = 0.0
+    clipped_component_count = 0
+    total_component_count = 0
+    total_clipping_l1 = 0.0
+    max_clipping_delta_abs = 0.0
+
+    for parameter in parameters:
+        weighted = np.asarray(parameter, dtype=np.float64) * float(weight)
+        if weighted.size == 0:
+            weighted_parameters.append(weighted.copy())
+            continue
+        if not np.all(np.isfinite(weighted)):
+            raise ValueError("weighted secure payload must be finite.")
+
+        if clip_threshold_abs is None:
+            clipped = weighted.copy()
+        else:
+            clipped = np.clip(weighted, -clip_threshold_abs, clip_threshold_abs)
+
+        flat_weighted = weighted.reshape(-1)
+        flat_clipped = clipped.reshape(-1)
+        local_raw_index = int(np.argmax(np.abs(flat_weighted)))
+        local_raw_value = float(flat_weighted[local_raw_index])
+        local_raw_abs = abs(local_raw_value)
+        if local_raw_abs > raw_weighted_payload_max_abs:
+            raw_weighted_payload_max_abs = local_raw_abs
+            raw_max_component_value = local_raw_value
+            clipped_max_component_value = float(flat_clipped[local_raw_index])
+
+        effective_weighted_payload_max_abs = max(
+            effective_weighted_payload_max_abs,
+            float(np.max(np.abs(flat_clipped))),
+        )
+        clipping_delta = np.abs(flat_weighted - flat_clipped)
+        clipped_component_count += int(np.count_nonzero(clipping_delta > 0.0))
+        total_component_count += int(flat_weighted.size)
+        total_clipping_l1 += float(np.sum(clipping_delta))
+        max_clipping_delta_abs = max(
+            max_clipping_delta_abs,
+            float(np.max(clipping_delta)),
+        )
+        weighted_parameters.append(clipped)
+
+    clipped_fraction = (
+        float(clipped_component_count) / float(total_component_count)
+        if total_component_count
+        else 0.0
+    )
+    summary = SecurePayloadClippingSummary(
+        clip_enabled=clip_threshold_abs is not None,
+        clip_applied=clipped_component_count > 0,
+        clip_threshold_abs=(
+            None if clip_threshold_abs is None else float(clip_threshold_abs)
+        ),
+        raw_weighted_payload_max_abs=float(raw_weighted_payload_max_abs),
+        effective_weighted_payload_max_abs=float(effective_weighted_payload_max_abs),
+        raw_max_component_value=float(raw_max_component_value),
+        clipped_max_component_value=float(clipped_max_component_value),
+        clipped_component_count=int(clipped_component_count),
+        total_component_count=int(total_component_count),
+        clipped_fraction=float(clipped_fraction),
+        total_clipping_l1=float(total_clipping_l1),
+        max_clipping_delta_abs=float(max_clipping_delta_abs),
+    )
+    return weighted_parameters, summary
+
+
+def _encode_secure_payload_or_raise(
+    *,
+    encoder: Any,
+    secure_spec: SecureAggregationClientSpec,
+    shared_parameters: list[np.ndarray],
+    client_id: str,
+    round_id: int,
+    num_examples: int,
+    total_examples_normalizer: int | float | None = None,
+) -> tuple[Any, float, SecurePayloadClippingSummary]:
+    effective_weight = float(num_examples)
+    if total_examples_normalizer is not None:
+        # Normalize the FedAvg weight with the server-provided total example count
+        # before secure encoding. This preserves the weighted-average math while
+        # shrinking the encoded magnitude from `num_examples * update` to
+        # `(num_examples / total_examples) * update`, which helps prevent finite-field
+        # overflow during quantization and secure aggregation. The client therefore
+        # depends on the server sending the total-example normalizer in the fit config.
+        normalizer = float(total_examples_normalizer)
+        if not np.isfinite(normalizer) or normalizer <= 0.0:
+            raise ValueError("total_examples_normalizer must be a finite positive number.")
+        effective_weight = float(num_examples) / normalizer
+    weighted_parameters, clipping_summary = _clip_weighted_secure_payload(
+        parameters=shared_parameters,
+        weight=effective_weight,
+        secure_spec=secure_spec,
+    )
+    try:
+        encoded_update = encoder.encode(
+            weighted_parameters,
+            client_id=client_id,
+            round_id=round_id,
+            weight=1,
+        )
+    except ValueError as exc:
+        if "Quantized value exceeds the signed field range" not in str(exc):
+            raise
+        max_supported_weighted_abs = _max_supported_weighted_payload_abs(secure_spec)
+        raise ValueError(
+            "Secure aggregation quantization overflow for client-side encoded payload: "
+            f"client_id={client_id}, round_id={int(round_id)}, num_examples={int(num_examples)}, "
+            f"total_examples_normalizer={total_examples_normalizer}, "
+            f"weighted_payload_raw_max_abs={clipping_summary.raw_weighted_payload_max_abs:.6g}, "
+            f"weighted_payload_effective_max_abs={clipping_summary.effective_weighted_payload_max_abs:.6g}, "
+            f"clip_threshold_abs={clipping_summary.clip_threshold_abs}, "
+            f"max_supported_weighted_abs={max_supported_weighted_abs:.6g}, "
+            f"scale={int(secure_spec.quantization_scale)}, "
+            f"field_modulus={int(secure_spec.field_modulus)}. "
+            "Lower `secure_quantization_scale`, increase `secure_field_modulus`, "
+            "or reduce the weighted model-update magnitude."
+        ) from exc
+    if clipping_summary.clip_applied:
+        LOGGER.warning(
+            "Secure payload clipping applied client=%s round=%s num_examples=%s "
+            "threshold_abs=%.6g raw_max_abs=%.6g clipped_max_abs=%.6g "
+            "raw_max_component=%.6g clipped_max_component=%.6g clipped_components=%s/%s "
+            "clipped_fraction=%.6f total_clipping_l1=%.6g max_clip_delta_abs=%.6g",
+            client_id,
+            int(round_id),
+            int(num_examples),
+            float(clipping_summary.clip_threshold_abs or 0.0),
+            float(clipping_summary.raw_weighted_payload_max_abs),
+            float(clipping_summary.effective_weighted_payload_max_abs),
+            float(clipping_summary.raw_max_component_value),
+            float(clipping_summary.clipped_max_component_value),
+            int(clipping_summary.clipped_component_count),
+            int(clipping_summary.total_component_count),
+            float(clipping_summary.clipped_fraction),
+            float(clipping_summary.total_clipping_l1),
+            float(clipping_summary.max_clipping_delta_abs),
+        )
+    return (
+        encoded_update,
+        float(clipping_summary.effective_weighted_payload_max_abs),
+        clipping_summary,
+    )
+
+
+def build_secure_payload_clipping_metrics(
+    summary: SecurePayloadClippingSummary,
+) -> dict[str, Any]:
+    """Return fit metrics describing client-side secure weighted-payload clipping."""
+
+    return {
+        SECURE_WEIGHTED_PAYLOAD_RAW_MAX_ABS_KEY: float(summary.raw_weighted_payload_max_abs),
+        SECURE_WEIGHTED_PAYLOAD_CLIP_SUMMARY_KEY: serialize_secure_payload_clipping_summary(summary),
+        SECURE_WEIGHTED_PAYLOAD_CLIP_THRESHOLD_KEY: (
+            float(summary.clip_threshold_abs)
+            if summary.clip_threshold_abs is not None
+            else float("nan")
+        ),
+        SECURE_WEIGHTED_PAYLOAD_CLIPPED_COMPONENT_COUNT_KEY: float(
+            summary.clipped_component_count
+        ),
+        SECURE_WEIGHTED_PAYLOAD_TOTAL_COMPONENT_COUNT_KEY: float(
+            summary.total_component_count
+        ),
+        SECURE_WEIGHTED_PAYLOAD_CLIPPED_FRACTION_KEY: float(summary.clipped_fraction),
+        SECURE_WEIGHTED_PAYLOAD_CLIP_TOTAL_L1_KEY: float(summary.total_clipping_l1),
+        SECURE_WEIGHTED_PAYLOAD_MAX_CLIP_DELTA_KEY: float(summary.max_clipping_delta_abs),
+        SECURE_WEIGHTED_PAYLOAD_RAW_MAX_COMPONENT_VALUE_KEY: float(
+            summary.raw_max_component_value
+        ),
+        SECURE_WEIGHTED_PAYLOAD_CLIPPED_MAX_COMPONENT_VALUE_KEY: float(
+            summary.clipped_max_component_value
+        ),
+        SECURE_WEIGHTED_PAYLOAD_WAS_CLIPPED_KEY: 1.0 if summary.clip_applied else 0.0,
+    }
+
+
+def resolve_secure_total_examples_normalizer(
+    config: dict[str, Any],
+    *,
+    cached_value: float | None,
+) -> tuple[float | None, bool]:
+    """Resolve the server-provided secure total-example normalizer for one round."""
+
+    configured_value = config.get(SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY)
+    if configured_value is None:
+        return cached_value, False
+    if not isinstance(configured_value, (int, float)):
+        raise ValueError(
+            "secure_total_examples_normalizer must be numeric when provided by the server."
+        )
+    normalizer = float(configured_value)
+    if not np.isfinite(normalizer) or normalizer <= 0.0:
+        raise ValueError("secure_total_examples_normalizer must be a finite positive number.")
+    return normalizer, bool(int(config.get(SECURE_TOTAL_EXAMPLES_FIXED_KEY, 0)))
+
+
+def normalize_clustering_vector(
+    vector: np.ndarray,
+    *,
+    enabled: bool,
+    mode: str,
+    reference_vector: np.ndarray | None = None,
+    eps: float = CLUSTERING_VECTOR_NORMALIZATION_EPS,
+) -> np.ndarray:
+    """Normalize a client clustering vector before projection/share encoding."""
+
+    normalized_vector = np.asarray(vector, dtype=np.float64).reshape(-1).copy()
+    if not enabled:
+        return normalized_vector
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode != "l2":
+        raise ValueError(
+            f"Unsupported clustering normalization mode {mode!r}. Supported values: l2."
+        )
+    denominator_vector = (
+        np.asarray(reference_vector, dtype=np.float64).reshape(-1)
+        if reference_vector is not None
+        else normalized_vector
+    )
+    norm = max(float(np.linalg.norm(denominator_vector)), float(eps))
+    normalized_vector /= norm
+    return normalized_vector
+
+
 if fl is not None:
 
     class FederatedLogisticRegressionClient(fl.client.NumPyClient):
@@ -121,10 +574,18 @@ if fl is not None:
             model_config: Any,
             seed: int,
             prediction_threshold: float = 0.5,
+            secure_aggregation: SecureAggregationClientSpec | None = None,
         ) -> None:
             self.data = data
             self.seed = seed
             self.prediction_threshold = float(prediction_threshold)
+            self._secure_aggregation = secure_aggregation or SecureAggregationClientSpec()
+            self._secure_encoder = (
+                _build_client_secure_encoder(self._secure_aggregation)
+                if self._secure_aggregation.enabled
+                else None
+            )
+            self._secure_total_examples_normalizer: float | None = None
             self.model = create_model(
                 model_name,
                 n_features=data.X_train.shape[1],
@@ -161,6 +622,39 @@ if fl is not None:
                     str(index) for index in shared_payload.shared_parameter_indices
                 ),
             }
+            if self._secure_encoder is not None:
+                round_id = int(config.get("server_round", 0))
+                total_examples_normalizer, cache_normalizer = resolve_secure_total_examples_normalizer(
+                    config,
+                    cached_value=self._secure_total_examples_normalizer,
+                )
+                if cache_normalizer:
+                    self._secure_total_examples_normalizer = total_examples_normalizer
+                elif SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY in config:
+                    self._secure_total_examples_normalizer = None
+                encoded_update, weighted_payload_max_abs, clipping_summary = _encode_secure_payload_or_raise(
+                    encoder=self._secure_encoder,
+                    secure_spec=self._secure_aggregation,
+                    shared_parameters=shared_payload.shared_parameters,
+                    client_id=str(self.data.client_id),
+                    round_id=round_id,
+                    num_examples=int(self.data.y_train.shape[0]),
+                    total_examples_normalizer=total_examples_normalizer,
+                )
+                metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
+                metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
+                metrics[SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY] = float(weighted_payload_max_abs)
+                if total_examples_normalizer is not None:
+                    metrics[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples_normalizer)
+                metrics.update(build_secure_payload_clipping_metrics(clipping_summary))
+                return (
+                    [
+                        np.asarray(share.payload, dtype=np.int64).copy()
+                        for share in encoded_update.helper_shares
+                    ],
+                    int(self.data.y_train.shape[0]),
+                    metrics,
+                )
             return (
                 shared_payload.shared_parameters,
                 int(self.data.y_train.shape[0]),
@@ -198,17 +692,97 @@ if fl is not None:
             model_config: PairwiseLogisticConfig,
             seed: int,
             recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+            secure_aggregation: SecureAggregationClientSpec | None = None,
         ) -> None:
             self.data = data
             self.seed = int(seed)
+            self._secure_aggregation = secure_aggregation or SecureAggregationClientSpec()
+            self._secure_encoder = (
+                _build_client_secure_encoder(self._secure_aggregation)
+                if self._secure_aggregation.enabled
+                else None
+            )
+            self._secure_total_examples_normalizer: float | None = None
             self.model = create_recommender(
                 recommender_type=recommender_type,
                 n_features=data.X_train.shape[1],
                 config=model_config,
             )
+            self._last_clustering_vector: np.ndarray | None = None
 
         def get_parameters(self, config: dict[str, Any]) -> list[np.ndarray]:
             return extract_shared_parameter_payload(self.model.get_parameters()).shared_parameters
+
+        def _train_shared_payload(
+            self,
+            parameters: list[np.ndarray],
+        ) -> tuple[SharedParameterPayload, float]:
+            merged_parameters = apply_shared_parameter_payload(
+                self.model.get_parameters(),
+                parameters,
+            )
+            self.model.set_parameters(merged_parameters)
+            train_loss = self.model.fit(
+                self.data.X_train,
+                self.data.y_train,
+                seed=self.seed + self.data.client_id,
+            )
+            return extract_shared_parameter_payload(self.model.get_parameters()), float(train_loss)
+
+        def _encode_shared_payload(
+            self,
+            shared_parameters: list[np.ndarray],
+            *,
+            round_id: int,
+            num_examples: int,
+            total_examples_normalizer: float | None = None,
+        ) -> tuple[Any, float, SecurePayloadClippingSummary]:
+            if self._secure_encoder is None:
+                raise RuntimeError(
+                    "Clustered recommender training requires client-side secure aggregation encoding."
+                )
+            encoded_update, weighted_payload_max_abs, clipping_summary = _encode_secure_payload_or_raise(
+                encoder=self._secure_encoder,
+                secure_spec=self._secure_aggregation,
+                shared_parameters=shared_parameters,
+                client_id=self.data.client_name,
+                round_id=round_id,
+                num_examples=int(num_examples),
+                total_examples_normalizer=total_examples_normalizer,
+            )
+            return encoded_update, float(weighted_payload_max_abs), clipping_summary
+
+        def _compute_clustering_vector(
+            self,
+            *,
+            shared_parameters: list[np.ndarray],
+            base_parameters: list[np.ndarray],
+            representation: str,
+            normalize_vector: bool,
+            normalization_mode: str,
+            delta_over_base_norm: bool,
+        ) -> np.ndarray:
+            from fed_perso_xai.recommender.clustering import RecommenderWeightVectorExtractor
+
+            extractor = RecommenderWeightVectorExtractor()
+            fitted_vector = extractor.flatten(shared_parameters)
+            base_vector = extractor.flatten(base_parameters)
+            normalized_representation = str(representation).strip().lower()
+            reference_vector: np.ndarray | None = None
+            if normalized_representation == "model":
+                vector = fitted_vector
+            elif normalized_representation == "delta":
+                vector = fitted_vector - base_vector
+                if delta_over_base_norm:
+                    reference_vector = base_vector
+            else:
+                raise ValueError(f"Unsupported clustering representation {representation!r}.")
+            return normalize_clustering_vector(
+                vector,
+                enabled=normalize_vector,
+                mode=normalization_mode,
+                reference_vector=reference_vector,
+            )
 
         def fit(
             self,
@@ -220,17 +794,7 @@ if fl is not None:
                 self.data.client_name,
                 int(self.data.y_train.shape[0]),
             )
-            merged_parameters = apply_shared_parameter_payload(
-                self.model.get_parameters(),
-                parameters,
-            )
-            self.model.set_parameters(merged_parameters)
-            train_loss = self.model.fit(
-                self.data.X_train,
-                self.data.y_train,
-                seed=self.seed + self.data.client_id,
-            )
-            shared_payload = extract_shared_parameter_payload(self.model.get_parameters())
+            shared_payload, train_loss = self._train_shared_payload(parameters)
             metrics: dict[str, Any] = {
                 "train_loss": float(train_loss),
                 "client_id": self.data.client_name,
@@ -246,10 +810,123 @@ if fl is not None:
                 int(self.data.y_train.shape[0]),
                 float(train_loss),
             )
+            if self._secure_encoder is not None:
+                round_id = int(config.get("server_round", 0))
+                total_examples_normalizer, cache_normalizer = resolve_secure_total_examples_normalizer(
+                    config,
+                    cached_value=self._secure_total_examples_normalizer,
+                )
+                if cache_normalizer:
+                    self._secure_total_examples_normalizer = total_examples_normalizer
+                elif SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY in config:
+                    self._secure_total_examples_normalizer = None
+                encoded_update, weighted_payload_max_abs, clipping_summary = self._encode_shared_payload(
+                    shared_payload.shared_parameters,
+                    round_id=round_id,
+                    num_examples=int(self.data.y_train.shape[0]),
+                    total_examples_normalizer=total_examples_normalizer,
+                )
+                metrics[SECURE_PAYLOAD_ENCODING_KEY] = SECURE_PAYLOAD_ENCODING_VALUE
+                metrics[SECURE_PAYLOAD_LAYOUT_KEY] = serialize_secure_payload_layout(encoded_update.layout)
+                metrics[SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY] = float(weighted_payload_max_abs)
+                if total_examples_normalizer is not None:
+                    metrics[SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY] = float(total_examples_normalizer)
+                metrics.update(build_secure_payload_clipping_metrics(clipping_summary))
+                return (
+                    [
+                        np.asarray(share.payload, dtype=np.int64).copy()
+                        for share in encoded_update.helper_shares
+                    ],
+                    int(self.data.y_train.shape[0]),
+                    metrics,
+                )
             return (
                 shared_payload.shared_parameters,
                 int(self.data.y_train.shape[0]),
                 metrics,
+            )
+
+        def fit_clustered(
+            self,
+            parameters: list[np.ndarray],
+            config: dict[str, Any],
+            *,
+            representation: str,
+            normalize_vector: bool,
+            normalization_mode: str,
+            delta_over_base_norm: bool,
+            include_raw_clustering_vector: bool,
+        ) -> ClusteredRecommenderClientUpdate:
+            LOGGER.info(
+                "Clustered recommender fit start client=%s train_pairs=%s include_raw_clustering_vector=%s",
+                self.data.client_name,
+                int(self.data.y_train.shape[0]),
+                bool(include_raw_clustering_vector),
+            )
+            shared_payload, train_loss = self._train_shared_payload(parameters)
+            round_id = int(config.get("server_round", 0))
+            num_examples = int(self.data.y_train.shape[0])
+            total_examples_normalizer, cache_normalizer = resolve_secure_total_examples_normalizer(
+                config,
+                cached_value=self._secure_total_examples_normalizer,
+            )
+            if cache_normalizer:
+                self._secure_total_examples_normalizer = total_examples_normalizer
+            elif SECURE_TOTAL_EXAMPLES_NORMALIZER_KEY in config:
+                self._secure_total_examples_normalizer = None
+            encoded_update, weighted_payload_max_abs, clipping_summary = self._encode_shared_payload(
+                shared_payload.shared_parameters,
+                round_id=round_id,
+                num_examples=num_examples,
+                total_examples_normalizer=total_examples_normalizer,
+            )
+            self._last_clustering_vector = self._compute_clustering_vector(
+                shared_parameters=shared_payload.shared_parameters,
+                base_parameters=parameters,
+                representation=representation,
+                normalize_vector=normalize_vector,
+                normalization_mode=normalization_mode,
+                delta_over_base_norm=delta_over_base_norm,
+            )
+            LOGGER.info(
+                "Clustered recommender fit complete client=%s train_pairs=%s train_loss=%.6f",
+                self.data.client_name,
+                num_examples,
+                float(train_loss),
+            )
+            raw_clustering_vector = (
+                np.asarray(self._last_clustering_vector, dtype=np.float64).copy()
+                if include_raw_clustering_vector
+                else None
+            )
+            return ClusteredRecommenderClientUpdate(
+                client_id=self.data.client_name,
+                num_examples=num_examples,
+                train_loss=float(train_loss),
+                encoded_model_update=encoded_update,
+                weighted_payload_max_abs=float(weighted_payload_max_abs),
+                clipping_summary=clipping_summary,
+                raw_clustering_vector=raw_clustering_vector,
+            )
+
+        def build_last_private_clustering_vector(
+            self,
+            *,
+            projection_spec: Any,
+            round_id: int,
+        ) -> Any:
+            from fed_perso_xai.recommender.clustering import ClientSideRandomProjector
+
+            if self._last_clustering_vector is None:
+                raise RuntimeError(
+                    f"No clustering representation is available for client {self.data.client_name}."
+                )
+            projector = ClientSideRandomProjector(self._secure_aggregation)
+            return projector.build_private_reduced_vector_from_flat_vector(
+                client_id=self.data.client_name,
+                flat_vector=self._last_clustering_vector,
+                projection_spec=projection_spec,
+                round_id=int(round_id),
             )
 
         def evaluate(
@@ -314,6 +991,6 @@ else:
             model_config: PairwiseLogisticConfig,
             seed: int,
             recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+            secure_aggregation: SecureAggregationClientSpec | None = None,
         ) -> None:
             raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
-

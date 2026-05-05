@@ -33,7 +33,7 @@ fi
 usage() {
   echo "Usage: sbatch --array=0-N scripts/prepare_recommender_context.sbatch RUN_ID_FILE [SELECTION_ID]" >&2
   echo "  RUN_ID_FILE: text file with one run_id per line" >&2
-  echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
+  echo "  SELECTION_ID defaults to test__max-40__seed-42" >&2
 }
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -42,7 +42,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 RUN_ID_FILE="$1"
-SELECTION_ID="${2:-${SELECTION_ID:-test__max-20__seed-42}}"
+SELECTION_ID="${2:-${SELECTION_ID:-test__max-40__seed-42}}"
 EXPLAINERS="${EXPLAINERS:-all}"
 CONFIGS="${CONFIGS:-all}"
 CLIENTS="${CLIENTS:-all}"

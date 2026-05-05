@@ -24,9 +24,14 @@ preprocessing:
 
 partition:
   num_clients:
+    - 5
     - 10
+    - 15
   alphas:
+    - 0.1
+    - 0.3
     - 1.0
+    - 10.0
   min_client_samples: 10
   max_retries: 50
 
@@ -42,7 +47,7 @@ models:
 training:
   rounds: 200
   strategy: fedavg
-  simulation_backend: debug-sequential
+  simulation_backend: ray
   fit_fraction: 1.0
   evaluate_fraction: 1.0
   prediction_threshold: 0.5
@@ -56,8 +61,8 @@ explain_eval:
   split: test
   explainers: all
   configs: all
-  max_instances: 20
-  rows_per_shard: 20
+  max_instances: 40
+  rows_per_shard: 40
   random_state: 42
   skip_existing: true
   force: false

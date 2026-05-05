@@ -127,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--secure-field-modulus", type=int, default=2_147_483_647)
     train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
     train_parser.add_argument("--secure-seed", type=int, default=0)
+    train_parser.add_argument(
+        "--secure-clip-weighted-payload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Clip each client weighted secure payload to a safe per-client bound before quantization.",
+    )
+    train_parser.add_argument(
+        "--secure-clip-budget-fraction",
+        type=float,
+        default=0.95,
+        help="Fraction of the finite-field aggregate budget reserved for client-side secure payload clipping.",
+    )
     train_parser.add_argument("--run-id")
     train_parser.add_argument(
         "--partitions",
@@ -280,7 +292,23 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_label_parser.add_argument("--selection", dest="selection_id", required=True)
     recommender_label_parser.add_argument("--persona", default="lay")
     recommender_label_parser.add_argument("--persona-config", type=Path)
+    recommender_label_parser.add_argument(
+        "--output-persona",
+        help="Artifact namespace for labeled preferences. Defaults to the fixed persona name or 'dirichlet_sampled'.",
+    )
     recommender_label_parser.add_argument("--simulator", default="dirichlet_persona")
+    recommender_label_parser.add_argument(
+        "--persona-assignment-policy",
+        choices=("fixed", "dirichlet_sampled"),
+        default="fixed",
+        help="Use a fixed persona per client or sample one persona per client from a Dirichlet-controlled client mixture.",
+    )
+    recommender_label_parser.add_argument(
+        "--persona-assignment-alpha",
+        type=float,
+        default=0.3,
+        help="Dirichlet concentration for heterogeneous client-level persona assignment. Larger values are more balanced across personas; smaller values are more concentrated.",
+    )
     recommender_label_parser.add_argument(
         "--clients",
         default="all",
@@ -295,6 +323,15 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_label_parser.add_argument("--seed", type=int, default=42)
     recommender_label_parser.add_argument("--label-seed", type=int, default=1729)
     recommender_label_parser.add_argument("--instance-test-size", type=float, default=0.2)
+    recommender_label_parser.add_argument(
+        "--instance-validation-size",
+        type=float,
+        default=0.1,
+        help=(
+            "Validation split size applied to the remaining post-test instance pool. "
+            "Set to 0 to disable a separate validation split."
+        ),
+    )
     recommender_label_parser.add_argument("--instance-split-seed", type=int)
     recommender_label_parser.add_argument("--tau", type=float)
     recommender_label_parser.add_argument("--concentration-c", type=float)
@@ -347,6 +384,18 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
     recommender_train_parser.add_argument("--secure-seed", type=int, default=0)
     recommender_train_parser.add_argument(
+        "--secure-clip-weighted-payload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Clip each client weighted secure payload to a safe per-client bound before quantization.",
+    )
+    recommender_train_parser.add_argument(
+        "--secure-clip-budget-fraction",
+        type=float,
+        default=0.95,
+        help="Fraction of the finite-field aggregate budget reserved for client-side secure payload clipping.",
+    )
+    recommender_train_parser.add_argument(
         "--clustered",
         action="store_true",
         help="Enable clustered recommender training with secure K-means and secure per-cluster aggregation.",
@@ -356,7 +405,38 @@ def build_parser() -> argparse.ArgumentParser:
         default="secure_kmeans",
         choices=["secure_kmeans"],
     )
+    recommender_train_parser.add_argument(
+        "--clustering-representation",
+        default="model",
+        choices=["model", "delta"],
+        help="Cluster either the full local model parameters or the per-round local update relative to the client's starting model.",
+    )
+    recommender_train_parser.add_argument(
+        "--clustering-normalize-vector",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize each client clustering vector before projection and secret sharing.",
+    )
+    recommender_train_parser.add_argument(
+        "--clustering-normalization-mode",
+        default="l2",
+        choices=["l2"],
+        help="Normalization mode applied to client clustering vectors before projection/sharing.",
+    )
+    recommender_train_parser.add_argument(
+        "--clustering-delta-over-base-norm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When clustering on deltas, normalize by the starting model norm instead of the delta norm.",
+    )
+    recommender_train_parser.add_argument(
+        "--clustering-assignment-margin",
+        type=float,
+        default=0.05,
+        help="Require a new cluster to be this much closer before switching a client away from its previous cluster.",
+    )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
+    recommender_train_parser.add_argument("--clustering-num-restarts", type=int, default=5)
     recommender_train_parser.add_argument(
         "--clustering-enable-pca",
         action=argparse.BooleanOptionalAction,
@@ -433,7 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         default=None,
-        help="Overwrite existing completed federated training runs for launcher experiments.",
+        help=(
+            "Retrain and overwrite existing completed federated runs for launcher experiments. "
+            "When omitted, completed runs are reused and the launcher proceeds directly to "
+            "explain/evaluate planning."
+        ),
     )
     return parser
 
@@ -528,6 +612,8 @@ def main() -> None:
             secure_field_modulus=args.secure_field_modulus,
             secure_quantization_scale=args.secure_quantization_scale,
             secure_seed=args.secure_seed,
+            secure_clip_weighted_payload=args.secure_clip_weighted_payload,
+            secure_clip_budget_fraction=args.secure_clip_budget_fraction,
         )
         artifacts, summary = train_federated_from_partitions(
             config,
@@ -719,6 +805,7 @@ def main() -> None:
             selection_id=args.selection_id,
             persona=args.persona,
             persona_config_path=args.persona_config,
+            output_persona=args.output_persona,
             simulator=args.simulator,
             clients=args.clients,
             context_filename=args.context_filename,
@@ -726,9 +813,12 @@ def main() -> None:
             seed=args.seed,
             label_seed=args.label_seed,
             instance_test_size=args.instance_test_size,
+            instance_validation_size=args.instance_validation_size,
             instance_split_seed=args.instance_split_seed,
             tau=args.tau,
             concentration_c=args.concentration_c,
+            persona_assignment_policy=args.persona_assignment_policy,
+            persona_assignment_alpha=args.persona_assignment_alpha,
             paths=_build_artifact_paths(args),
         )
         print(json.dumps(payload, indent=2))
@@ -772,10 +862,18 @@ def main() -> None:
                 secure_field_modulus=args.secure_field_modulus,
                 secure_quantization_scale=args.secure_quantization_scale,
                 secure_seed=args.secure_seed,
+                secure_clip_weighted_payload=args.secure_clip_weighted_payload,
+                secure_clip_budget_fraction=args.secure_clip_budget_fraction,
                 clustering=RecommenderClusteringConfig(
                     enabled=bool(args.clustered),
                     method=args.clustering_method,
+                    representation=args.clustering_representation,
+                    normalize_clustering_vector=bool(args.clustering_normalize_vector),
+                    clustering_normalization_mode=args.clustering_normalization_mode,
+                    delta_over_base_norm=bool(args.clustering_delta_over_base_norm),
+                    assignment_margin=args.clustering_assignment_margin,
                     k=args.clustering_k,
+                    num_restarts=args.clustering_num_restarts,
                     enable_pca=bool(args.clustering_enable_pca),
                     pca_components=args.clustering_pca_components,
                     warmup_rounds=args.clustering_warmup_rounds,

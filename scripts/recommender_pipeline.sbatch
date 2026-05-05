@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [LABEL_NAMESPACE] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -34,11 +34,11 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [LABEL_NAMESPACE] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
-  echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
-  echo "  PERSONA defaults to lay" >&2
+  echo "  SELECTION_ID defaults to test__max-40__seed-42" >&2
+  echo "  LABEL_NAMESPACE defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise" >&2
   echo "  TRAIN_ROUNDS defaults to 10" >&2
   echo "  TRAIN_EPOCHS defaults to 5" >&2
   echo "  TRAIN_BATCH_SIZE defaults to 2048" >&2
@@ -47,21 +47,45 @@ usage() {
   echo "  TRAIN_SVM_INTERCEPT_SCALING defaults to 1.0" >&2
   echo "  SKIP_LABELING defaults to 1" >&2
   echo "  CLUSTERING_K defaults to 3" >&2
+  echo "  CLUSTERING_REPRESENTATION defaults to model" >&2
+  echo "  CLUSTERING_NORMALIZE_VECTOR defaults to 1" >&2
+  echo "  CLUSTERING_NORMALIZATION_MODE defaults to l2" >&2
+  echo "  CLUSTERING_DELTA_OVER_BASE_NORM defaults to 1" >&2
+  echo "  CLUSTERING_ASSIGNMENT_MARGIN defaults to 0.05" >&2
+  echo "  CLUSTERING_NUM_RESTARTS defaults to 5" >&2
   echo "  CLUSTERING_WARMUP_ROUNDS defaults to 0" >&2
   echo "  CLUSTERING_FREEZE_PCA_AFTER_WARMUP defaults to 0" >&2
   echo "  CLUSTERING_ENABLE_PCA defaults to 1" >&2
   echo "  TOP_K defaults to 1,3,5" >&2
+  echo "  PERSONA_ASSIGNMENT_POLICY defaults to dirichlet_sampled" >&2
+  echo "  PERSONA_ASSIGNMENT_ALPHA defaults to CLI default when omitted" >&2
+  echo "  FIXED_PERSONA defaults to lay and is used only when PERSONA_ASSIGNMENT_POLICY=fixed" >&2
 }
 
-if [[ $# -lt 2 || $# -gt 16 ]]; then
+if [[ $# -lt 2 || $# -gt 18 ]]; then
   usage
   exit 2
 fi
 
 RUN_ID="$1"
 MODE_RAW="$2"
-SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
-PERSONA="${4:-${PERSONA:-lay}}"
+SELECTION_ID="${3:-${SELECTION_ID:-test__max-40__seed-42}}"
+PERSONA_ASSIGNMENT_POLICY="${17:-${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}}"
+FIXED_PERSONA="${FIXED_PERSONA:-lay}"
+LABEL_NAMESPACE_ARG="${4:-}"
+LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
+LEGACY_PERSONA_NAMESPACE="${PERSONA:-}"
+if [[ -n "$LABEL_NAMESPACE_ARG" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ARG"
+elif [[ -n "$LABEL_NAMESPACE_ENV" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ENV"
+elif [[ -n "$LEGACY_PERSONA_NAMESPACE" ]]; then
+  LABEL_NAMESPACE="$LEGACY_PERSONA_NAMESPACE"
+elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_NAMESPACE="$FIXED_PERSONA"
+else
+  LABEL_NAMESPACE="dirichlet_sampled"
+fi
 TRAIN_ROUNDS="${5:-${TRAIN_ROUNDS:-10}}"
 TRAIN_EPOCHS="${6:-${TRAIN_EPOCHS:-5}}"
 TRAIN_BATCH_SIZE="${7:-${TRAIN_BATCH_SIZE:-2048}}"
@@ -70,15 +94,46 @@ TRAIN_SVM_C="${9:-${TRAIN_SVM_C:-0.5}}"
 TRAIN_SVM_INTERCEPT_SCALING="${10:-${TRAIN_SVM_INTERCEPT_SCALING:-1.0}}"
 SKIP_LABELING="${11:-${SKIP_LABELING:-1}}"
 CLUSTERING_K="${12:-${CLUSTERING_K:-3}}"
+CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-model}"
+CLUSTERING_NORMALIZE_VECTOR="${CLUSTERING_NORMALIZE_VECTOR:-1}"
+CLUSTERING_NORMALIZATION_MODE="${CLUSTERING_NORMALIZATION_MODE:-l2}"
+CLUSTERING_DELTA_OVER_BASE_NORM="${CLUSTERING_DELTA_OVER_BASE_NORM:-1}"
+CLUSTERING_ASSIGNMENT_MARGIN="${CLUSTERING_ASSIGNMENT_MARGIN:-0.05}"
 CLUSTERING_WARMUP_ROUNDS="${13:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
+CLUSTERING_NUM_RESTARTS="${CLUSTERING_NUM_RESTARTS:-5}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${14:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
 TOP_K="${15:-${TOP_K:-1,3,5}}"
 CLUSTERING_ENABLE_PCA="${16:-${CLUSTERING_ENABLE_PCA:-1}}"
+PERSONA_ASSIGNMENT_ALPHA="${18:-${PERSONA_ASSIGNMENT_ALPHA:-}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-7}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
 if [[ ! "$CLUSTERING_K" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_K" -lt 1 ]]; then
   echo "ERROR: CLUSTERING_K must be a positive integer." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_REPRESENTATION" =~ ^(model|delta)$ ]]; then
+  echo "ERROR: CLUSTERING_REPRESENTATION must be model or delta." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NORMALIZE_VECTOR" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_NORMALIZE_VECTOR must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NORMALIZATION_MODE" =~ ^(l2)$ ]]; then
+  echo "ERROR: CLUSTERING_NORMALIZATION_MODE must be l2." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_DELTA_OVER_BASE_NORM" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_DELTA_OVER_BASE_NORM must be 0 or 1." >&2
+  exit 2
+fi
+if ! [[ "$CLUSTERING_ASSIGNMENT_MARGIN" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($CLUSTERING_ASSIGNMENT_MARGIN >= 0 && $CLUSTERING_ASSIGNMENT_MARGIN < 1)}")" != "1" ]]; then
+  echo "ERROR: CLUSTERING_ASSIGNMENT_MARGIN must be a number in [0, 1)." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_NUM_RESTARTS" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_NUM_RESTARTS" -lt 1 ]]; then
+  echo "ERROR: CLUSTERING_NUM_RESTARTS must be a positive integer." >&2
   exit 2
 fi
 if [[ ! "$CLUSTERING_WARMUP_ROUNDS" =~ ^[0-9]+$ ]]; then
@@ -95,6 +150,14 @@ if [[ ! "$CLUSTERING_ENABLE_PCA" =~ ^(0|1)$ ]]; then
 fi
 if [[ ! "$SKIP_LABELING" =~ ^(0|1)$ ]]; then
   echo "ERROR: SKIP_LABELING must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
+  echo "ERROR: PERSONA_ASSIGNMENT_POLICY must be fixed or dirichlet_sampled." >&2
+  exit 2
+fi
+if [[ -n "$PERSONA_ASSIGNMENT_ALPHA" ]] && { ! [[ "$PERSONA_ASSIGNMENT_ALPHA" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($PERSONA_ASSIGNMENT_ALPHA > 0)}")" != "1" ]]; }; then
+  echo "ERROR: PERSONA_ASSIGNMENT_ALPHA must be a positive number when provided." >&2
   exit 2
 fi
 if ! [[ "$TRAIN_LEARNING_RATE" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_LEARNING_RATE > 0)}")" != "1" ]]; then
@@ -136,6 +199,18 @@ case "${MODE_RAW,,}" in
     ;;
 esac
 
+if [[ -n "${SECURE_QUANTIZATION_SCALE:-}" ]]; then
+  RESOLVED_SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE}"
+elif [[ "${MODE_VALUE}" == "clustered" ]]; then
+  # 15-client clustered recommender runs overflowed at 4096 with max_safe_scale
+  # only slightly below it; use a lower default to leave margin.
+  RESOLVED_SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE_CLUSTERED:-3072}"
+else
+  # Non-clustered recommender secure aggregation weights updates by num_examples.
+  # 65536 overflowed current 10-client adult_income runs; 8192 leaves headroom.
+  RESOLVED_SECURE_QUANTIZATION_SCALE=8192
+fi
+
 # Workload ---------------------------------------------------------------------
 echo "[$(date --iso-8601=seconds)] Starting recommender pipeline job"
 echo "  project_root=${PROJECT_ROOT}"
@@ -143,9 +218,22 @@ echo "  host=${HOSTNAME}"
 echo "  pwd=$(pwd)"
 echo "  run_id=${RUN_ID}"
 echo "  selection_id=${SELECTION_ID}"
-echo "  persona=${PERSONA}"
+echo "  label_namespace=${LABEL_NAMESPACE}"
+echo "  fixed_persona=${FIXED_PERSONA}"
+echo "  persona_assignment_policy=${PERSONA_ASSIGNMENT_POLICY}"
+echo "  persona_assignment_alpha=${PERSONA_ASSIGNMENT_ALPHA:-<cli-default>}"
+echo "  instance_test_size=${INSTANCE_TEST_SIZE:-0.2}"
+echo "  instance_validation_size=${INSTANCE_VALIDATION_SIZE:-0.1}"
 echo "  mode=${MODE_VALUE}"
 echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
+echo "  secure_num_helpers=${SECURE_NUM_HELPERS:-15}"
+echo "  secure_privacy_threshold=${SECURE_PRIVACY_THRESHOLD:-2}"
+echo "  secure_reconstruction_threshold=${SECURE_RECONSTRUCTION_THRESHOLD:-3}"
+echo "  secure_field_modulus=${SECURE_FIELD_MODULUS:-3037000493}"
+echo "  secure_quantization_scale=${RESOLVED_SECURE_QUANTIZATION_SCALE}"
+echo "  secure_seed=${SECURE_SEED:-7}"
+echo "  secure_clip_weighted_payload=${SECURE_CLIP_WEIGHTED_PAYLOAD:-1}"
+echo "  secure_clip_budget_fraction=${SECURE_CLIP_BUDGET_FRACTION:-0.95}"
 echo "  clustered=${CLUSTERED_VALUE}"
 echo "  train_rounds=${TRAIN_ROUNDS}"
 echo "  train_epochs=${TRAIN_EPOCHS}"
@@ -155,6 +243,12 @@ echo "  train_svm_c=${TRAIN_SVM_C}"
 echo "  train_svm_intercept_scaling=${TRAIN_SVM_INTERCEPT_SCALING}"
 echo "  skip_labeling=${SKIP_LABELING}"
 echo "  clustering_k=${CLUSTERING_K}"
+echo "  clustering_representation=${CLUSTERING_REPRESENTATION}"
+echo "  clustering_normalize_vector=${CLUSTERING_NORMALIZE_VECTOR}"
+echo "  clustering_normalization_mode=${CLUSTERING_NORMALIZATION_MODE}"
+echo "  clustering_delta_over_base_norm=${CLUSTERING_DELTA_OVER_BASE_NORM}"
+echo "  clustering_assignment_margin=${CLUSTERING_ASSIGNMENT_MARGIN}"
+echo "  clustering_num_restarts=${CLUSTERING_NUM_RESTARTS}"
 echo "  clustering_warmup_rounds=${CLUSTERING_WARMUP_ROUNDS}"
 echo "  clustering_freeze_pca_after_warmup=${CLUSTERING_FREEZE_PCA_AFTER_WARMUP}"
 echo "  clustering_enable_pca=${CLUSTERING_ENABLE_PCA}"
@@ -177,23 +271,36 @@ TARGET_CMD=(
   SIMULATION_BACKEND=auto
   RAY_NUM_CPUS=${RAY_NUM_CPUS}
   CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
+  FIXED_PERSONA=${FIXED_PERSONA}
+  PERSONA_ASSIGNMENT_POLICY=${PERSONA_ASSIGNMENT_POLICY}
+  PERSONA_ASSIGNMENT_ALPHA=${PERSONA_ASSIGNMENT_ALPHA}
+  INSTANCE_TEST_SIZE=${INSTANCE_TEST_SIZE:-0.2}
+  INSTANCE_VALIDATION_SIZE=${INSTANCE_VALIDATION_SIZE:-0.1}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=${CLUSTERED_VALUE}
   CLUSTERING_K=${CLUSTERING_K}
+  CLUSTERING_REPRESENTATION=${CLUSTERING_REPRESENTATION}
+  CLUSTERING_NORMALIZE_VECTOR=${CLUSTERING_NORMALIZE_VECTOR}
+  CLUSTERING_NORMALIZATION_MODE=${CLUSTERING_NORMALIZATION_MODE}
+  CLUSTERING_DELTA_OVER_BASE_NORM=${CLUSTERING_DELTA_OVER_BASE_NORM}
+  CLUSTERING_ASSIGNMENT_MARGIN=${CLUSTERING_ASSIGNMENT_MARGIN}
+  CLUSTERING_NUM_RESTARTS=${CLUSTERING_NUM_RESTARTS}
   CLUSTERING_WARMUP_ROUNDS=${CLUSTERING_WARMUP_ROUNDS}
   CLUSTERING_FREEZE_PCA_AFTER_WARMUP=${CLUSTERING_FREEZE_PCA_AFTER_WARMUP}
   CLUSTERING_ENABLE_PCA=${CLUSTERING_ENABLE_PCA}
   TOP_K=${TOP_K}
-  SECURE_NUM_HELPERS=15
-  SECURE_PRIVACY_THRESHOLD=2
-  SECURE_RECONSTRUCTION_THRESHOLD=3
-  SECURE_FIELD_MODULUS=3037000493
-  SECURE_QUANTIZATION_SCALE=16777216
-  SECURE_SEED=7
+  SECURE_NUM_HELPERS=${SECURE_NUM_HELPERS:-15}
+  SECURE_PRIVACY_THRESHOLD=${SECURE_PRIVACY_THRESHOLD:-2}
+  SECURE_RECONSTRUCTION_THRESHOLD=${SECURE_RECONSTRUCTION_THRESHOLD:-3}
+  SECURE_FIELD_MODULUS=${SECURE_FIELD_MODULUS:-3037000493}
+  SECURE_QUANTIZATION_SCALE=${RESOLVED_SECURE_QUANTIZATION_SCALE}
+  SECURE_SEED=${SECURE_SEED:-7}
+  SECURE_CLIP_WEIGHTED_PAYLOAD=${SECURE_CLIP_WEIGHTED_PAYLOAD:-1}
+  SECURE_CLIP_BUDGET_FRACTION=${SECURE_CLIP_BUDGET_FRACTION:-0.95}
   scripts/run_recommender_pipeline.sh
   "${RUN_ID}"
   "${SELECTION_ID}"
-  "${PERSONA}"
+  "${LABEL_NAMESPACE}"
 )
 
 printf '  command='

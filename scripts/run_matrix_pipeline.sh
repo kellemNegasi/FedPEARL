@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_matrix_pipeline.sh [BASE_CONFIG] [PERSONA]
+  scripts/run_matrix_pipeline.sh [BASE_CONFIG] [LABEL_NAMESPACE]
 
 Environment variables:
   PYTHON=python                         Python executable to use.
@@ -14,7 +14,10 @@ Environment variables:
   WAIT_FOR_SLURM=1                     Passed through to run_explain_eval_pipeline.sh.
   ALLOW_PARTIAL=0                      Passed through to run_explain_eval_pipeline.sh.
   FORCE_TRAINING=0                     Passed through to both pipeline scripts.
-  PERSONA=lay                          Recommender persona if not given as argv[2].
+  LABEL_NAMESPACE=                     Recommender label namespace if not given as argv[2].
+                                        Defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise.
+  PERSONA=                             Deprecated alias for LABEL_NAMESPACE.
+  FIXED_PERSONA=lay                    Bundled persona config used only when PERSONA_ASSIGNMENT_POLICY=fixed.
   CLIENTS=all                          Passed through to run_recommender_pipeline.sh.
   CONTEXT_FILENAME=candidate_context.parquet
   LABEL_FILENAME=pairwise_labels.parquet
@@ -55,7 +58,22 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 BASE_CONFIG="${1:-configs/job_launcher.yml}"
-PERSONA="${2:-${PERSONA:-lay}}"
+PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
+FIXED_PERSONA="${FIXED_PERSONA:-lay}"
+LABEL_NAMESPACE_ARG="${2:-}"
+LABEL_NAMESPACE_ENV="${LABEL_NAMESPACE:-}"
+LEGACY_PERSONA_NAMESPACE="${PERSONA:-}"
+if [[ -n "$LABEL_NAMESPACE_ARG" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ARG"
+elif [[ -n "$LABEL_NAMESPACE_ENV" ]]; then
+  LABEL_NAMESPACE="$LABEL_NAMESPACE_ENV"
+elif [[ -n "$LEGACY_PERSONA_NAMESPACE" ]]; then
+  LABEL_NAMESPACE="$LEGACY_PERSONA_NAMESPACE"
+elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
+  LABEL_NAMESPACE="$FIXED_PERSONA"
+else
+  LABEL_NAMESPACE="dirichlet_sampled"
+fi
 
 ALPHAS="${ALPHAS:-0.3,1.0,5,10}"
 NUM_CLIENTS="${NUM_CLIENTS:-10,15}"
@@ -115,7 +133,7 @@ if [[ "${#CLIENT_VALUES[@]}" -eq 0 ]]; then
 fi
 
 echo "==> Base config: $BASE_CONFIG"
-echo "==> Persona: $PERSONA"
+echo "==> Label namespace: $LABEL_NAMESPACE"
 echo "==> Alphas: ${ALPHA_VALUES[*]}"
 echo "==> Client counts: ${CLIENT_VALUES[*]}"
 echo "==> Output root: $RUN_ROOT"
@@ -179,7 +197,7 @@ PY
 
     echo "==> Running recommender pipeline for run_id=$RUN_ID selection=$SELECTION_ID"
     recommender_log="$combo_dir/recommender_pipeline.log"
-    recommender_args=("$RUN_ID" "$SELECTION_ID" "$PERSONA")
+    recommender_args=("$RUN_ID" "$SELECTION_ID" "$LABEL_NAMESPACE")
 
     if [[ -n "$EVAL_OUTPUT_DIR" ]]; then
       eval_output_path="$EVAL_OUTPUT_DIR/recommender_eval_alpha-${alpha}_clients-${num_clients}.json"
@@ -195,6 +213,8 @@ PY
       "SIMULATOR=${SIMULATOR:-dirichlet_persona}"
       "LABEL_SEED=${LABEL_SEED:-1729}"
       "PERSONA_SEED=${PERSONA_SEED:-42}"
+      "FIXED_PERSONA=${FIXED_PERSONA}"
+      "PERSONA_ASSIGNMENT_POLICY=${PERSONA_ASSIGNMENT_POLICY}"
       "TRAIN_ROUNDS=${TRAIN_ROUNDS:-10}"
       "TRAIN_EPOCHS=${TRAIN_EPOCHS:-5}"
       "TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-64}"
@@ -209,6 +229,9 @@ PY
       "TOP_K=${TOP_K:-1,3,5}"
       "FORCE_TRAINING=${FORCE_TRAINING:-0}"
     )
+    if [[ -n "${PERSONA_ASSIGNMENT_ALPHA:-}" ]]; then
+      env_args+=("PERSONA_ASSIGNMENT_ALPHA=${PERSONA_ASSIGNMENT_ALPHA}")
+    fi
     if [[ -n "$eval_output_path" ]]; then
       env_args+=("EVAL_OUTPUT=$eval_output_path")
     fi

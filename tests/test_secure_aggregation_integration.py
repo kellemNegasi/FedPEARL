@@ -6,16 +6,26 @@ import numpy as np
 import pytest
 
 from fed_perso_xai.fl.client import (
+    SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY,
+    SecureAggregationClientSpec,
+    _build_client_secure_encoder,
+    _clip_weighted_secure_payload,
+    _encode_secure_payload_or_raise,
     apply_shared_parameter_payload,
     extract_shared_parameter_payload,
 )
 from fed_perso_xai.fl.strategy import (
     _build_secure_aggregator,
     _plan_secure_quantization,
+    _validate_encoded_secure_aggregate_bound,
     _weighted_average_parameter_sets,
 )
 from fed_perso_xai.models import load_global_model
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
+from fed_perso_xai.recommender.clustering import (
+    SecureClusterModelAggregator,
+    weighted_average_parameter_sets,
+)
 from fed_perso_xai.orchestration.training import train_federated_from_prepared
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
@@ -23,6 +33,7 @@ from fed_perso_xai.utils.config import (
     FederatedTrainingConfig,
     LogisticRegressionConfig,
     PartitionConfig,
+    RecommenderFederatedTrainingConfig,
 )
 
 FLOWER_AVAILABLE = importlib.util.find_spec("flwr") is not None
@@ -101,6 +112,91 @@ def test_secure_aggregator_matches_plain_shared_weighted_average() -> None:
     np.testing.assert_allclose(secure_average[1], plain_average[1], atol=1e-5, rtol=0.0)
 
 
+
+
+def test_server_normalized_secure_payloads_require_rescaling_for_partial_results() -> None:
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        secure_aggregation=True,
+        secure_num_helpers=5,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_quantization_scale=100_000,
+        secure_seed=17,
+    )
+    secure_aggregator = _build_secure_aggregator(config)
+    parameter_sets = [
+        [np.array([0.25, 1.0]), np.array([0.5])],
+        [np.array([1.25, -0.5]), np.array([1.0])],
+    ]
+    weights = [4, 3]
+    global_normalizer = 12.0
+    participating_weight = float(sum(weights))
+
+    plain_average = _weighted_average_parameter_sets(parameter_sets, weights)
+    normalized_payloads = [
+        [array * (float(weight) / global_normalizer) for array in payload]
+        for payload, weight in zip(parameter_sets, weights, strict=True)
+    ]
+    secure_result = secure_aggregator.aggregate(normalized_payloads, round_id=11)
+    rescaled_average = [
+        tensor * (global_normalizer / participating_weight)
+        for tensor in secure_result.aggregated_tensors
+    ]
+
+    np.testing.assert_allclose(
+        rescaled_average[0],
+        plain_average[0],
+        atol=1e-5,
+        rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        rescaled_average[1],
+        plain_average[1],
+        atol=1e-5,
+        rtol=0.0,
+    )
+
+def test_secure_aggregator_matches_plain_average_with_server_normalized_weights() -> None:
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        secure_aggregation=True,
+        secure_num_helpers=5,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_quantization_scale=100_000,
+        secure_seed=17,
+    )
+    secure_aggregator = _build_secure_aggregator(config)
+    parameter_sets = [
+        [np.array([0.25, 1.0]), np.array([0.5])],
+        [np.array([1.25, -0.5]), np.array([1.0])],
+        [np.array([-0.75, 0.25]), np.array([-0.5])],
+    ]
+    weights = [4, 3, 5]
+    total_weight = float(sum(weights))
+
+    plain_average = _weighted_average_parameter_sets(parameter_sets, weights)
+    normalized_payloads = [
+        [array * (float(weight) / total_weight) for array in payload]
+        for payload, weight in zip(parameter_sets, weights, strict=True)
+    ]
+    secure_result = secure_aggregator.aggregate(normalized_payloads, round_id=10)
+
+    np.testing.assert_allclose(
+        secure_result.aggregated_tensors[0],
+        plain_average[0],
+        atol=1e-5,
+        rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        secure_result.aggregated_tensors[1],
+        plain_average[1],
+        atol=1e-5,
+        rtol=0.0,
+    )
+
+
 def test_secure_quantization_plan_reduces_scale_when_payloads_would_overflow() -> None:
     payloads = [
         [np.array([6.0, -1.0], dtype=np.float64), np.array([0.25], dtype=np.float64)],
@@ -117,6 +213,34 @@ def test_secure_quantization_plan_reduces_scale_when_payloads_would_overflow() -
     assert plan.effective_scale < plan.requested_scale
     assert plan.effective_scale == 138_045_476
     assert plan.max_component_l1 == pytest.approx(11.0)
+
+
+def test_encoded_secure_aggregate_bound_rejects_potential_field_wraparound() -> None:
+    fit_results = [
+        (
+            None,
+            type(
+                "FitResStub",
+                (),
+                {"metrics": {SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY: 4.0}, "num_examples": 1},
+            )(),
+        ),
+        (
+            None,
+            type(
+                "FitResStub",
+                (),
+                {"metrics": {SECURE_WEIGHTED_PAYLOAD_MAX_ABS_KEY: 4.0}, "num_examples": 1},
+            )(),
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="aggregate may overflow the finite field"):
+        _validate_encoded_secure_aggregate_bound(
+            fit_results,
+            quantization_scale=10,
+            field_modulus=101,
+        )
 
 
 def test_secure_aggregator_handles_large_modulus_with_many_helpers() -> None:
@@ -145,6 +269,104 @@ def test_secure_aggregator_handles_large_modulus_with_many_helpers() -> None:
         atol=1e-6,
         rtol=0.0,
     )
+
+
+def test_weighted_secure_payload_clipping_reports_raw_and_clipped_values() -> None:
+    weighted_parameters, summary = _clip_weighted_secure_payload(
+        parameters=[np.array([0.6, -0.3, 0.05], dtype=np.float64)],
+        weight=10,
+        secure_spec=SecureAggregationClientSpec(
+            enabled=True,
+            field_modulus=101,
+            quantization_scale=10,
+            clip_weighted_payload=True,
+            clip_budget_fraction=1.0,
+            expected_num_contributors=2,
+        ),
+    )
+
+    np.testing.assert_allclose(
+        weighted_parameters[0],
+        np.array([2.5, -2.5, 0.5], dtype=np.float64),
+        atol=0.0,
+        rtol=0.0,
+    )
+    assert summary.clip_applied is True
+    assert summary.clip_threshold_abs == pytest.approx(2.5)
+    assert summary.raw_weighted_payload_max_abs == pytest.approx(6.0)
+    assert summary.effective_weighted_payload_max_abs == pytest.approx(2.5)
+    assert summary.raw_max_component_value == pytest.approx(6.0)
+    assert summary.clipped_max_component_value == pytest.approx(2.5)
+    assert summary.clipped_component_count == 2
+    assert summary.total_component_count == 3
+    assert summary.total_clipping_l1 == pytest.approx(4.0)
+    assert summary.max_clipping_delta_abs == pytest.approx(3.5)
+
+
+def test_cluster_secure_aggregator_restores_weighted_average_from_global_normalization() -> None:
+    config = RecommenderFederatedTrainingConfig(
+        run_id="run",
+        selection_id="sel",
+        persona="persona",
+        secure_aggregation=True,
+        secure_num_helpers=5,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_field_modulus=3_037_000_493,
+        secure_quantization_scale=100_000,
+        secure_seed=17,
+    )
+    secure_spec = SecureAggregationClientSpec(
+        enabled=True,
+        num_helpers=5,
+        privacy_threshold=2,
+        reconstruction_threshold=3,
+        field_modulus=3_037_000_493,
+        quantization_scale=100_000,
+        seed=17,
+    )
+    encoder = _build_client_secure_encoder(secure_spec)
+    parameter_sets = {
+        "client_a": [np.array([0.25, 1.0]), np.array([0.5])],
+        "client_b": [np.array([1.25, -0.5]), np.array([1.0])],
+        "client_c": [np.array([-0.75, 0.25]), np.array([-0.5])],
+    }
+    weights = {"client_a": 4, "client_b": 3, "client_c": 5}
+    total_examples = float(sum(weights.values()))
+    encoded_updates = {}
+    payload_bounds = {}
+    for client_id, payload in parameter_sets.items():
+        encoded_update, weighted_payload_max_abs, _ = _encode_secure_payload_or_raise(
+            encoder=encoder,
+            secure_spec=secure_spec,
+            shared_parameters=payload,
+            client_id=client_id,
+            round_id=4,
+            num_examples=weights[client_id],
+            total_examples_normalizer=total_examples,
+        )
+        encoded_updates[client_id] = encoded_update
+        payload_bounds[client_id] = weighted_payload_max_abs
+
+    aggregator = SecureClusterModelAggregator(config)
+    result = aggregator.aggregate(
+        client_updates=encoded_updates,
+        client_weights=weights,
+        client_weighted_payload_bounds=payload_bounds,
+        assignments={client_id: 0 for client_id in parameter_sets},
+        round_id=4,
+        cluster_count=1,
+        fallback_parameters={0: parameter_sets["client_a"]},
+        total_examples_normalizer=total_examples,
+        min_contributors=1,
+    )[0]
+    expected = weighted_average_parameter_sets(
+        list(parameter_sets.values()),
+        list(weights.values()),
+    )
+
+    np.testing.assert_allclose(result.parameters[0], expected[0], atol=1e-5, rtol=0.0)
+    np.testing.assert_allclose(result.parameters[1], expected[1], atol=1e-5, rtol=0.0)
 
 
 @pytest.mark.skipif(
@@ -207,6 +429,10 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
     assert plain_summary["round_history_summary"][0]["aggregation"]["mode"] == "plain"
     assert secure_summary["round_history_summary"][0]["aggregation"]["mode"] == "secure"
     assert secure_summary["round_history_summary"][0]["aggregation"]["helper_count"] == 5
+    assert (
+        secure_summary["round_history_summary"][0]["aggregation"]["weight_normalization_total_examples"]
+        > 0.0
+    )
 
     plain_parameters = load_global_model(plain_artifacts.run_dir).model.get_parameters()
     secure_parameters = load_global_model(secure_artifacts.run_dir).model.get_parameters()

@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -14,6 +15,7 @@ from fed_perso_xai.orchestration.recommender_training import (
     evaluate_recommender_model,
     train_federated_recommender,
 )
+from fed_perso_xai.recommender import load_recommender
 from fed_perso_xai.recommender.evaluation import (
     evaluate_grouped_ranked_scores,
     evaluate_ranked_scores,
@@ -33,6 +35,57 @@ def _paths(tmp_path):
         comparison_root=tmp_path / "comparisons",
         cache_dir=tmp_path / "cache",
     )
+
+
+def _prepare_basic_recommender_run(tmp_path, *, client_count: int = 2):
+    paths = _paths(tmp_path)
+    run_id = "unit-run"
+    selection = "test__max-2__seed-9"
+    persona = "lay"
+    run_dir = paths.federated_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+
+    for client_idx in range(client_count):
+        client_dir = run_dir / "clients" / f"client_{client_idx:03d}"
+        context_dir = client_dir / "recommender_context" / selection
+        label_dir = client_dir / "recommender_labels" / selection / persona
+        context_dir.mkdir(parents=True)
+        label_dir.mkdir(parents=True)
+        candidates = pd.DataFrame(
+            {
+                "client_id": [f"client_{client_idx:03d}"] * 4,
+                "dataset_index": [0, 0, 1, 1],
+                "instance_id": ["i0", "i0", "i1", "i1"],
+                "method_variant": ["a", "b", "a", "b"],
+                "metric_quality_z": [2.0, -2.0, 1.5, -1.5],
+                "candidate_index_within_instance": [0, 1, 0, 1],
+            }
+        )
+        labels = pd.DataFrame(
+            {
+                "client_id": [f"client_{client_idx:03d}"] * 2,
+                "dataset_index": [0, 1],
+                "pair_1": ["a", "a"],
+                "pair_2": ["b", "b"],
+                "label": [0, 0],
+                "split": ["train", "test"],
+            }
+        )
+        candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
+        labels.to_parquet(label_dir / "pairwise_labels.parquet", index=False)
+        (label_dir / "simulation_metadata.json").write_text(
+            json.dumps(
+                {
+                    "instance_split": {
+                        "train_dataset_indices": [0],
+                        "test_dataset_indices": [1],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    return paths, run_id, selection, persona
 
 
 def test_recommender_training_dir_includes_training_variant() -> None:
@@ -345,6 +398,74 @@ def test_train_federated_recommender_allows_clients_without_eval_pairs(tmp_path)
 
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["client_count"] == 1
+
+
+@pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_debug_recommender_training_supports_plain_and_secure_modes(tmp_path) -> None:
+    paths, run_id, selection, persona = _prepare_basic_recommender_run(tmp_path, client_count=2)
+
+    plain_artifacts, plain_metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            paths=paths,
+            rounds=2,
+            epochs=5,
+            batch_size=2,
+            learning_rate=0.2,
+            simulation_backend="debug-sequential",
+            min_available_clients=2,
+            top_k=(1, 2),
+            secure_aggregation=False,
+        )
+    )
+    secure_artifacts, secure_metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            paths=paths,
+            rounds=2,
+            epochs=5,
+            batch_size=2,
+            learning_rate=0.2,
+            simulation_backend="debug-sequential",
+            min_available_clients=2,
+            top_k=(1, 2),
+            secure_aggregation=True,
+            secure_num_helpers=5,
+            secure_privacy_threshold=2,
+            secure_reconstruction_threshold=3,
+            secure_quantization_scale=100_000,
+            secure_seed=31,
+        )
+    )
+
+    assert plain_artifacts.run_dir.name == "plain"
+    assert secure_artifacts.run_dir.name == "secure"
+    assert plain_metadata["aggregation_mode"] == "plain"
+    assert secure_metadata["aggregation_mode"] == "secure"
+
+    secure_history = list(csv.DictReader(secure_artifacts.training_history_path.open("r", encoding="utf-8")))
+    assert secure_history
+    secure_round_one = json.loads(secure_history[0]["aggregation"])
+    assert secure_round_one["mode"] == "secure"
+    assert secure_round_one["helper_count"] == 5
+
+    plain_model = load_recommender(plain_artifacts.model_artifact_path)
+    secure_model = load_recommender(secure_artifacts.model_artifact_path)
+    plain_parameters = plain_model.get_parameters()
+    secure_parameters = secure_model.get_parameters()
+    assert len(plain_parameters) == len(secure_parameters)
+    for plain_parameter, secure_parameter in zip(plain_parameters, secure_parameters, strict=True):
+        np.testing.assert_allclose(
+            np.asarray(secure_parameter, dtype=float),
+            np.asarray(plain_parameter, dtype=float),
+            atol=1e-4,
+            rtol=0.0,
+        )
 
 
 @pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")

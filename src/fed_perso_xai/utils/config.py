@@ -10,6 +10,8 @@ from typing import Any
 DEFAULT_RECOMMENDER_TYPE = "svm_rank"
 _SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
 _SUPPORTED_RECOMMENDER_CLUSTERING_METHODS = ("secure_kmeans",)
+_SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS = ("model", "delta")
+_SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES = ("l2",)
 
 
 def _normalize_recommender_type(recommender_type: str) -> str:
@@ -28,6 +30,26 @@ def _normalize_recommender_clustering_method(method: str) -> str:
         supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_METHODS)
         raise ValueError(
             f"Unsupported clustering.method {method!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
+def _normalize_recommender_clustering_representation(representation: str) -> str:
+    normalized = str(representation).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_REPRESENTATIONS)
+        raise ValueError(
+            f"Unsupported clustering.representation {representation!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
+def _normalize_recommender_clustering_normalization_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_NORMALIZATION_MODES)
+        raise ValueError(
+            f"Unsupported clustering.normalization_mode {mode!r}. Supported values: {supported}."
         )
     return normalized
 
@@ -179,6 +201,8 @@ class FederatedTrainingConfig(ExperimentConfig):
     secure_field_modulus: int = 2_147_483_647
     secure_quantization_scale: int = 1 << 16
     secure_seed: int = 0
+    secure_clip_weighted_payload: bool = False
+    secure_clip_budget_fraction: float = 0.95
     simulation_resources: dict[str, float] = field(
         default_factory=lambda: {"num_cpus": 1.0, "num_gpus": 0.0}
     )
@@ -221,6 +245,12 @@ class FederatedTrainingConfig(ExperimentConfig):
             minimum=1,
         )
         _require_non_negative_integer("secure_seed", self.secure_seed)
+        _require_fraction_or_one(
+            "secure_clip_budget_fraction",
+            self.secure_clip_budget_fraction,
+        )
+        if float(self.secure_clip_budget_fraction) <= 0.0:
+            raise ValueError("secure_clip_budget_fraction must be greater than 0.")
         _validate_simulation_resources(self.simulation_resources)
 
         from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
@@ -264,6 +294,8 @@ class RecommenderFederatedTrainingConfig:
     secure_field_modulus: int = 2_147_483_647
     secure_quantization_scale: int = 1 << 16
     secure_seed: int = 0
+    secure_clip_weighted_payload: bool = False
+    secure_clip_budget_fraction: float = 0.95
     clustering: "RecommenderClusteringConfig" = field(
         default_factory=lambda: RecommenderClusteringConfig()
     )
@@ -324,6 +356,12 @@ class RecommenderFederatedTrainingConfig:
             minimum=1,
         )
         _require_non_negative_integer("secure_seed", self.secure_seed)
+        _require_fraction_or_one(
+            "secure_clip_budget_fraction",
+            self.secure_clip_budget_fraction,
+        )
+        if float(self.secure_clip_budget_fraction) <= 0.0:
+            raise ValueError("secure_clip_budget_fraction must be greater than 0.")
         if not isinstance(self.clustering, RecommenderClusteringConfig):
             raise TypeError("clustering must be a RecommenderClusteringConfig instance.")
         if self.runtime_num_clients > 0 and self.clustering.enabled:
@@ -384,6 +422,8 @@ class RecommenderFederatedTrainingConfig:
             secure_field_modulus=self.secure_field_modulus,
             secure_quantization_scale=self.secure_quantization_scale,
             secure_seed=self.secure_seed,
+            secure_clip_weighted_payload=self.secure_clip_weighted_payload,
+            secure_clip_budget_fraction=self.secure_clip_budget_fraction,
             clustering=self.clustering,
             simulation_resources=dict(self.simulation_resources),
         )
@@ -398,7 +438,13 @@ class RecommenderClusteringConfig:
 
     enabled: bool = False
     method: str = "secure_kmeans"
+    representation: str = "model"
+    normalize_clustering_vector: bool = True
+    clustering_normalization_mode: str = "l2"
+    delta_over_base_norm: bool = True
+    assignment_margin: float = 0.05
     k: int = 3
+    num_restarts: int = 5
     enable_pca: bool = True
     pca_components: int = 8
     warmup_rounds: int = 0
@@ -410,7 +456,17 @@ class RecommenderClusteringConfig:
         if not isinstance(self.enabled, bool):
             raise TypeError("enabled must be a boolean.")
         _normalize_recommender_clustering_method(self.method)
+        _normalize_recommender_clustering_representation(self.representation)
+        if not isinstance(self.normalize_clustering_vector, bool):
+            raise TypeError("normalize_clustering_vector must be a boolean.")
+        _normalize_recommender_clustering_normalization_mode(self.clustering_normalization_mode)
+        if not isinstance(self.delta_over_base_norm, bool):
+            raise TypeError("delta_over_base_norm must be a boolean.")
+        _require_non_negative("assignment_margin", self.assignment_margin)
+        if float(self.assignment_margin) >= 1.0:
+            raise ValueError("assignment_margin must be less than 1.")
         _require_integer_at_least("k", self.k, minimum=1)
+        _require_integer_at_least("num_restarts", self.num_restarts, minimum=1)
         if not isinstance(self.enable_pca, bool):
             raise TypeError("enable_pca must be a boolean.")
         _require_integer_at_least("pca_components", self.pca_components, minimum=1)

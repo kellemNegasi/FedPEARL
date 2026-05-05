@@ -100,6 +100,7 @@ def train_federated_recommender(
         split_name="train",
     )
     feature_columns = loaded_clients[0]["feature_columns"]
+    monitor_split_name = "validation"
     try:
         loaded_eval_clients = _load_client_recommender_inputs(
             run_artifact_dir=run_context.run_artifact_dir,
@@ -109,10 +110,23 @@ def train_federated_recommender(
             context_filename=config.context_filename,
             label_filename=config.label_filename,
             feature_columns=feature_columns,
-            split_name="test",
+            split_name=monitor_split_name,
         )
     except FileNotFoundError:
-        loaded_eval_clients = []
+        monitor_split_name = "test"
+        try:
+            loaded_eval_clients = _load_client_recommender_inputs(
+                run_artifact_dir=run_context.run_artifact_dir,
+                selection_id=config.selection_id,
+                persona=config.persona,
+                clients=config.clients,
+                context_filename=config.context_filename,
+                label_filename=config.label_filename,
+                feature_columns=feature_columns,
+                split_name=monitor_split_name,
+            )
+        except FileNotFoundError:
+            loaded_eval_clients = []
     eval_lookup = {str(item["client_id"]): item for item in loaded_eval_clients}
     missing_eval_clients = sorted(
         str(item["client_id"])
@@ -314,6 +328,7 @@ def train_federated_recommender(
         "raw_pair_count": int(sum(item["data"].pair_count for item in loaded_clients)),
         "candidate_count": int(sum(item["data"].candidate_count for item in loaded_clients)),
         "instance_count": int(sum(item["data"].instance_count for item in loaded_clients)),
+        "eval_split_name": monitor_split_name if loaded_eval_clients else None,
         "eval_pair_count": int(sum(item["data"].augmented_pair_count for item in loaded_eval_clients)),
         "eval_raw_pair_count": int(sum(item["data"].pair_count for item in loaded_eval_clients)),
         "eval_candidate_count": int(sum(item["data"].candidate_count for item in loaded_eval_clients)),
@@ -518,7 +533,7 @@ def _load_client_recommender_inputs(
         if selected_dataset_indices is not None:
             candidates = _filter_frame_by_dataset_indices(candidates, selected_dataset_indices)
             pair_labels = _filter_frame_by_dataset_indices(pair_labels, selected_dataset_indices)
-        if "split" in pair_labels.columns and split_name in {"train", "test"}:
+        if "split" in pair_labels.columns and split_name in {"train", "validation", "test"}:
             pair_labels = pair_labels.loc[pair_labels["split"].astype(str) == split_name].copy()
         if candidates.empty or pair_labels.empty:
             continue
@@ -629,7 +644,13 @@ def _persist_clustered_training_artifacts(
         "recommender_type": config.recommender_type,
         "enabled": True,
         "method": config.clustering.method,
+        "representation": config.clustering.representation,
+        "normalize_clustering_vector": bool(config.clustering.normalize_clustering_vector),
+        "clustering_normalization_mode": str(config.clustering.clustering_normalization_mode),
+        "delta_over_base_norm": bool(config.clustering.delta_over_base_norm),
+        "assignment_margin": float(config.clustering.assignment_margin),
         "k": int(config.clustering.k),
+        "num_restarts": int(config.clustering.num_restarts),
         "enable_pca": bool(config.clustering.enable_pca),
         "pca_components": int(config.clustering.pca_components),
         "warmup_rounds": int(config.clustering.warmup_rounds),
@@ -1027,9 +1048,13 @@ def _select_recommender_dataset_indices(
     split_metadata: Mapping[str, Any] | None,
     split_name: str | None,
 ) -> tuple[int, ...] | None:
-    if split_name not in {"train", "test"} or split_metadata is None:
+    if split_name not in {"train", "validation", "test"} or split_metadata is None:
         return None
-    key = "train_dataset_indices" if split_name == "train" else "test_dataset_indices"
+    key = {
+        "train": "train_dataset_indices",
+        "validation": "validation_dataset_indices",
+        "test": "test_dataset_indices",
+    }[split_name]
     values = split_metadata.get(key)
     if not isinstance(values, list) or not values:
         return None
