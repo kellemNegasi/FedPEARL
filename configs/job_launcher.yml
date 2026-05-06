@@ -12,9 +12,12 @@ paths:
   comparison_root: comparisons
   cache_dir: data/cache/openml
 
+model_definitions_path: model_definitions.yml
+
 datasets:
   # - bank_marketing
-  - loan_default
+  # - loan_default
+  - cencus_income
 
 seeds:
   - 42
@@ -37,13 +40,7 @@ partition:
   max_retries: 50
 
 models:
-  - label: logreg-default
-    name: logistic_regression
-    params:
-      epochs: 5
-      batch_size: 256
-      learning_rate: 0.005
-      l2_regularization: 0.01
+  - mlp-default
 
 training:
   rounds: 200

@@ -37,6 +37,7 @@ usage() {
   echo "Environment:" >&2
   echo "  PYTHON_BIN=python3   Python executable to use" >&2
   echo "  FORCE_TRAINING=0     Override manifest default and pass --force to train-federated when set to 1" >&2
+  echo "  SKIP_PREPARE=0       Reuse existing partitions and skip prepare-data when set to 1" >&2
   echo "  RAY_NUM_CPUS=4       Override train-federated --ray-num-cpus" >&2
   echo "  CLIENT_NUM_CPUS=1.0  Override train-federated --client-num-cpus" >&2
 }
@@ -50,6 +51,7 @@ EXPERIMENTS_PATH="$1"
 RESULTS_DIR="${2:-$(dirname "$EXPERIMENTS_PATH")/training_results}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 FORCE_TRAINING="${FORCE_TRAINING:-0}"
+SKIP_PREPARE="${SKIP_PREPARE:-0}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1.0}"
 
@@ -63,6 +65,10 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 fi
 if [[ ! "$FORCE_TRAINING" =~ ^(0|1)$ ]]; then
   echo "ERROR: FORCE_TRAINING must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$SKIP_PREPARE" =~ ^(0|1)$ ]]; then
+  echo "ERROR: SKIP_PREPARE must be 0 or 1." >&2
   exit 2
 fi
 
@@ -153,8 +159,8 @@ echo "  strategy=${STRATEGY_NAME}"
 echo "  simulation_backend=${SIMULATION_BACKEND}"
 echo "  planned_run_id=${PLANNED_RUN_ID:-<generated>}"
 
-echo "==> Preparing partitions and training predictive federated model"
-"$PYTHON_BIN" - "$EXPERIMENTS_PATH" "$TASK_ID" "$TASK_OUTPUT_JSON" "$TASK_RESULT_JSON" "$FORCE_TRAINING" "$RAY_NUM_CPUS" "$CLIENT_NUM_CPUS" <<'PY'
+echo "==> Running predictive training launcher task"
+"$PYTHON_BIN" - "$EXPERIMENTS_PATH" "$TASK_ID" "$TASK_OUTPUT_JSON" "$TASK_RESULT_JSON" "$FORCE_TRAINING" "$SKIP_PREPARE" "$RAY_NUM_CPUS" "$CLIENT_NUM_CPUS" <<'PY'
 from __future__ import annotations
 
 import json
@@ -163,11 +169,11 @@ from pathlib import Path
 
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
+from fed_perso_xai.models.registry import build_model_config
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     DataPreparationConfig,
     FederatedTrainingConfig,
-    LogisticRegressionConfig,
     PartitionConfig,
     PreprocessingConfig,
 )
@@ -178,8 +184,9 @@ task_id = int(sys.argv[2])
 task_output_path = Path(sys.argv[3])
 task_result_path = Path(sys.argv[4])
 force_training = bool(int(sys.argv[5]))
-ray_num_cpus = int(float(sys.argv[6]))
-client_num_cpus = float(sys.argv[7])
+skip_prepare = bool(int(sys.argv[6]))
+ray_num_cpus = int(float(sys.argv[7]))
+client_num_cpus = float(sys.argv[8])
 
 experiment = json.loads(manifest_path.read_text(encoding="utf-8").splitlines()[task_id])
 
@@ -192,39 +199,52 @@ paths = ArtifactPaths(
     cache_dir=Path(experiment["paths"]["cache_dir"]),
 )
 preprocessing = experiment["preprocessing"]
-prepare_config = DataPreparationConfig(
-    dataset_name=str(experiment["dataset_name"]),
-    seed=int(experiment["seed"]),
-    paths=paths,
-    preprocessing=PreprocessingConfig(
-        global_eval_size=float(preprocessing["global_eval_size"]),
-        client_test_size=float(preprocessing["client_test_size"]),
-        fitting_mode=str(preprocessing["fitting_mode"]),
-        numeric_imputation_strategy=str(preprocessing["numeric_imputation_strategy"]),
-        categorical_imputation_strategy=str(preprocessing["categorical_imputation_strategy"]),
-    ),
-    partition=PartitionConfig(
-        num_clients=int(experiment["num_clients"]),
-        alpha=float(experiment["alpha"]),
-        min_client_samples=int(preprocessing["min_client_samples"]),
-        max_retries=int(preprocessing["max_retries"]),
-    ),
+partition_data_root = partition_root(
+    paths.partition_root,
+    str(experiment["dataset_name"]),
+    int(experiment["num_clients"]),
+    float(experiment["alpha"]),
+    int(experiment["seed"]),
 )
-prepare_result = prepare_federated_dataset(prepare_config)
+
+prepare_result = None
+if not skip_prepare:
+    prepare_config = DataPreparationConfig(
+        dataset_name=str(experiment["dataset_name"]),
+        seed=int(experiment["seed"]),
+        paths=paths,
+        preprocessing=PreprocessingConfig(
+            global_eval_size=float(preprocessing["global_eval_size"]),
+            client_test_size=float(preprocessing["client_test_size"]),
+            fitting_mode=str(preprocessing["fitting_mode"]),
+            numeric_imputation_strategy=str(preprocessing["numeric_imputation_strategy"]),
+            categorical_imputation_strategy=str(preprocessing["categorical_imputation_strategy"]),
+        ),
+        partition=PartitionConfig(
+            num_clients=int(experiment["num_clients"]),
+            alpha=float(experiment["alpha"]),
+            min_client_samples=int(preprocessing["min_client_samples"]),
+            max_retries=int(preprocessing["max_retries"]),
+        ),
+    )
+    prepare_result = prepare_federated_dataset(prepare_config)
+elif not (partition_data_root / "partition_metadata.json").exists():
+    raise FileNotFoundError(
+        f"SKIP_PREPARE=1 was requested, but no partition metadata exists at "
+        f"'{partition_data_root / 'partition_metadata.json'}'."
+    )
 
 training = experiment["training"]
 secure = training["secure_aggregation"]
+model_payload = {
+    key: value for key, value in dict(experiment["model"]).items() if value is not None
+}
 training_config = FederatedTrainingConfig(
     dataset_name=str(experiment["dataset_name"]),
     seed=int(experiment["seed"]),
     model_name=str(experiment["model_name"]),
     paths=paths,
-    model=LogisticRegressionConfig(
-        epochs=int(experiment["model"]["epochs"]),
-        batch_size=int(experiment["model"]["batch_size"]),
-        learning_rate=float(experiment["model"]["learning_rate"]),
-        l2_regularization=float(experiment["model"]["l2_regularization"]),
-    ),
+    model=build_model_config(str(experiment["model_name"]), model_payload),
     num_clients=int(experiment["num_clients"]),
     alpha=float(experiment["alpha"]),
     strategy_name=str(training["strategy_name"]),
@@ -249,13 +269,6 @@ training_config = FederatedTrainingConfig(
     secure_quantization_scale=int(secure["quantization_scale"]),
     secure_seed=int(secure["seed"]),
 )
-partition_data_root = partition_root(
-    paths.partition_root,
-    str(experiment["dataset_name"]),
-    int(experiment["num_clients"]),
-    float(experiment["alpha"]),
-    int(experiment["seed"]),
-)
 artifacts, training_summary = train_federated_from_partitions(
     training_config,
     run_id=(str(experiment.get("planned_run_id") or "") or None),
@@ -270,7 +283,10 @@ task_output_payload = {
     "training_metadata_path": str(artifacts.training_metadata_path),
     "rounds_completed": training_summary.get("rounds_completed"),
     "training_summary": training_summary,
-    "prepared_partition_root": str(prepare_result.federated_artifacts.root_dir),
+    "skip_prepare": skip_prepare,
+    "prepared_partition_root": str(
+        prepare_result.federated_artifacts.root_dir if prepare_result is not None else partition_data_root
+    ),
 }
 task_output_path.write_text(json.dumps(task_output_payload, indent=2), encoding="utf-8")
 

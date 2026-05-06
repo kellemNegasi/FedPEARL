@@ -200,7 +200,25 @@ def _load_launcher_yaml(config_path: Path) -> dict[str, Any]:
         payload = yaml.safe_load(handle) or {}
     if not isinstance(payload, dict):
         raise ValueError(f"Launcher config must be a mapping: {config_path}")
+    model_definitions_path = payload.get("model_definitions_path")
+    if model_definitions_path is not None:
+        resolved_model_definitions_path = (config_path.parent / str(model_definitions_path)).resolve()
+        payload["_model_definitions"] = _load_model_definitions_yaml(resolved_model_definitions_path)
+        payload["_model_definitions_path"] = str(resolved_model_definitions_path)
     return payload
+
+
+def _load_model_definitions_yaml(definitions_path: Path) -> dict[str, Any]:
+    with definitions_path.open("r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"Model definitions config must be a mapping: {definitions_path}")
+    definitions = payload.get("models", payload)
+    if not isinstance(definitions, dict):
+        raise ValueError(
+            f"Model definitions file must contain a mapping of model keys: {definitions_path}"
+        )
+    return definitions
 
 
 def _build_paths(raw_paths: dict[str, Any]) -> ArtifactPaths:
@@ -323,7 +341,10 @@ def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:
     ]
     model_entries = _require_non_empty_list(
         "models or model",
-        _expand_model_entries(_get_model_config(raw_config)),
+        _expand_model_entries(
+            _get_model_config(raw_config),
+            model_definitions=raw_config.get("_model_definitions"),
+        ),
     )
 
     experiments: list[LauncherExperiment] = []
@@ -354,7 +375,11 @@ def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:
     return experiments
 
 
-def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
+def _expand_model_entries(
+    raw_models: Any,
+    *,
+    model_definitions: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     if raw_models is None:
         raw_models = [{"name": "logistic_regression"}]
     if isinstance(raw_models, dict) and "name" not in raw_models:
@@ -365,8 +390,7 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
 
     entries: list[dict[str, Any]] = []
     for raw_model in _require_non_empty_list("models or model", _as_list(raw_models)):
-        if not isinstance(raw_model, dict):
-            raw_model = {"name": str(raw_model)}
+        raw_model = _resolve_model_entry(raw_model, model_definitions=model_definitions)
         model_name = str(raw_model.get("name", "logistic_regression"))
         params = raw_model.get("params") or {
             key: raw_model[key]
@@ -448,6 +472,65 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
             label = raw_model.get("label") or default_label
             entries.append({"label": label, "name": model_name, "config": config})
     return entries
+
+
+def _resolve_model_entry(
+    raw_model: Any,
+    *,
+    model_definitions: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(raw_model, dict):
+        if "ref" in raw_model:
+            return _merge_model_definition(
+                ref_name=str(raw_model["ref"]),
+                override=raw_model,
+                model_definitions=model_definitions,
+            )
+        return raw_model
+
+    model_token = str(raw_model)
+    if model_definitions and model_token in model_definitions:
+        return _merge_model_definition(
+            ref_name=model_token,
+            override={},
+            model_definitions=model_definitions,
+        )
+    return {"name": model_token}
+
+
+def _merge_model_definition(
+    *,
+    ref_name: str,
+    override: dict[str, Any],
+    model_definitions: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not model_definitions:
+        raise ValueError(
+            f"Model reference '{ref_name}' was requested, but no model_definitions_path is configured."
+        )
+    try:
+        definition = model_definitions[ref_name]
+    except KeyError as exc:
+        available = ", ".join(sorted(model_definitions))
+        raise ValueError(
+            f"Unknown model definition '{ref_name}'. Available definitions: {available}."
+        ) from exc
+    if not isinstance(definition, dict):
+        raise ValueError(f"Model definition '{ref_name}' must be a mapping.")
+
+    merged = dict(definition)
+    merged_params = dict(definition.get("params") or {})
+    override_params = dict(override.get("params") or {})
+    if override_params:
+        merged_params.update(override_params)
+        merged["params"] = merged_params
+    elif "params" in definition:
+        merged["params"] = merged_params
+
+    for key, value in override.items():
+        if key not in {"ref", "params"}:
+            merged[key] = value
+    return merged
 
 
 def _get_model_config(raw_config: dict[str, Any]) -> Any:
