@@ -34,7 +34,7 @@ bash ./scripts/submit_aggregate_explain_eval.sh
 Using the same run IDs used in the aggregator, run the followiong context 
 
 ```bash
- bash scripts/prepare_recommender_context.sh
+bash scripts/prepare_recommender_context.sh
 ```
 
 Finally train recommendation using:
@@ -42,3 +42,8 @@ Finally train recommendation using:
 scripts/submit_pipeline.sh
 ```
 There are a log of modle training and resource management configuration to chose here. The configuration for LCC can also be set here meaning the modulus prime and the quantization scale. 
+
+For raw data first create folder and add the csv there
+e.g 
+`mkdir -p data/raw/loan_default`
+for loand default dataset.

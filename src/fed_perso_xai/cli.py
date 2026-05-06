@@ -974,12 +974,24 @@ def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.05)
-    parser.add_argument("--l2-regularization", type=float, default=0.0)
+    parser.add_argument("--l2-regularization", type=float, default=1e-4)
     parser.add_argument(
         "--hidden-dim",
         type=int,
-        default=64,
+        default=100,
         help="Hidden-layer width for `mlp_classifier`.",
+    )
+    parser.add_argument(
+        "--activation",
+        choices=("relu", "tanh"),
+        default="relu",
+        help="Hidden-layer activation for `mlp_classifier`.",
+    )
+    parser.add_argument(
+        "--optimizer",
+        choices=("sgd", "adam"),
+        default="sgd",
+        help="Local optimizer for `mlp_classifier`.",
     )
 
 
@@ -1025,7 +1037,12 @@ def _build_model_config(args: argparse.Namespace) -> ModelConfig:
         'l2_regularization': args.l2_regularization,
     }
     if args.model == 'mlp_classifier':
-        return MLPConfig(hidden_dim=args.hidden_dim, **common_kwargs)
+        return MLPConfig(
+            hidden_dim=args.hidden_dim,
+            activation=args.activation,
+            optimizer=args.optimizer,
+            **common_kwargs,
+        )
     return LogisticRegressionConfig(**common_kwargs)
 
 

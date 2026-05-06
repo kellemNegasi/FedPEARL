@@ -76,6 +76,8 @@ def _build_mlp_model(
     return MLPClassifierModel(
         n_features=n_features,
         hidden_dim=config.hidden_dim,
+        activation=config.activation,
+        optimizer=config.optimizer,
         learning_rate=config.learning_rate,
         batch_size=config.batch_size,
         local_epochs=config.epochs,

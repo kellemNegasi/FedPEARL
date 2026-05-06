@@ -39,12 +39,16 @@ class MLPClassifierModel:
 
     n_features: int
     hidden_dim: int
+    activation: str
+    optimizer: str
     learning_rate: float
     batch_size: int
     local_epochs: int
-    l2_regularization: float = 0.0
+    l2_regularization: float = 1e-4
 
     def __post_init__(self) -> None:
+        self.activation = self._normalize_activation(self.activation)
+        self.optimizer = self._normalize_optimizer(self.optimizer)
         self.W1, self.b1, self.W2, self.b2 = [
             parameter.copy()
             for parameter in initialize_parameters(self.n_features, self.hidden_dim)
@@ -84,6 +88,8 @@ class MLPClassifierModel:
         y = np.asarray(y, dtype=np.float64).reshape(-1)
         n_samples = X.shape[0]
         batch_size = max(1, min(self.batch_size, n_samples))
+        adam_state = self._initialize_adam_state() if self.optimizer == "adam" else None
+        step = 0
         for _ in range(self.local_epochs):
             indices = rng.permutation(n_samples)
             for start in range(0, n_samples, batch_size):
@@ -95,14 +101,44 @@ class MLPClassifierModel:
                 grad_W2 = (hidden_activation.T @ errors) / X_batch.shape[0]
                 grad_W2 += self.l2_regularization * self.W2
                 grad_b2 = np.mean(errors, axis=0)
-                hidden_grad = (errors @ self.W2.T) * (hidden_linear > 0.0)
+                hidden_grad = (errors @ self.W2.T) * self._activation_derivative(
+                    hidden_linear,
+                    hidden_activation,
+                )
                 grad_W1 = (X_batch.T @ hidden_grad) / X_batch.shape[0]
                 grad_W1 += self.l2_regularization * self.W1
                 grad_b1 = np.mean(hidden_grad, axis=0)
-                self.W1 -= self.learning_rate * grad_W1
-                self.b1 -= self.learning_rate * grad_b1
-                self.W2 -= self.learning_rate * grad_W2
-                self.b2 -= self.learning_rate * grad_b2
+                if adam_state is None:
+                    self.W1 -= self.learning_rate * grad_W1
+                    self.b1 -= self.learning_rate * grad_b1
+                    self.W2 -= self.learning_rate * grad_W2
+                    self.b2 -= self.learning_rate * grad_b2
+                else:
+                    step += 1
+                    self.W1 = self._adam_update(
+                        self.W1,
+                        grad_W1,
+                        state=adam_state["W1"],
+                        step=step,
+                    )
+                    self.b1 = self._adam_update(
+                        self.b1,
+                        grad_b1,
+                        state=adam_state["b1"],
+                        step=step,
+                    )
+                    self.W2 = self._adam_update(
+                        self.W2,
+                        grad_W2,
+                        state=adam_state["W2"],
+                        step=step,
+                    )
+                    self.b2 = self._adam_update(
+                        self.b2,
+                        grad_b2,
+                        state=adam_state["b2"],
+                        step=step,
+                    )
         return self.loss(X, y)
 
     def predict_logits(self, X: np.ndarray) -> np.ndarray:
@@ -137,6 +173,8 @@ class MLPClassifierModel:
             'parameter_3': self.b2.astype(np.float64, copy=False),
             'n_features': np.asarray([self.n_features], dtype=np.int64),
             'hidden_dim': np.asarray([self.hidden_dim], dtype=np.int64),
+            'activation': np.asarray([self.activation]),
+            'optimizer': np.asarray([self.optimizer]),
             'learning_rate': np.asarray([self.learning_rate], dtype=np.float64),
             'batch_size': np.asarray([self.batch_size], dtype=np.int64),
             'local_epochs': np.asarray([self.local_epochs], dtype=np.int64),
@@ -151,8 +189,62 @@ class MLPClassifierModel:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         features = np.asarray(X, dtype=np.float64)
         hidden_linear = features @ self.W1 + self.b1
-        hidden_activation = np.maximum(hidden_linear, 0.0)
+        hidden_activation = self._apply_activation(hidden_linear)
         logits = hidden_activation @ self.W2 + self.b2[0]
         clipped_logits = np.clip(logits, -30.0, 30.0)
         probabilities = 1.0 / (1.0 + np.exp(-clipped_logits))
         return hidden_linear, hidden_activation, logits, probabilities
+
+    @staticmethod
+    def _normalize_activation(value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"relu", "tanh"}:
+            raise ValueError("activation must be one of: relu, tanh.")
+        return normalized
+
+    @staticmethod
+    def _normalize_optimizer(value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"sgd", "adam"}:
+            raise ValueError("optimizer must be one of: sgd, adam.")
+        return normalized
+
+    def _apply_activation(self, hidden_linear: np.ndarray) -> np.ndarray:
+        if self.activation == "relu":
+            return np.maximum(hidden_linear, 0.0)
+        return np.tanh(hidden_linear)
+
+    def _activation_derivative(
+        self,
+        hidden_linear: np.ndarray,
+        hidden_activation: np.ndarray,
+    ) -> np.ndarray:
+        if self.activation == "relu":
+            return (hidden_linear > 0.0).astype(np.float64)
+        return 1.0 - hidden_activation**2
+
+    def _initialize_adam_state(self) -> dict[str, dict[str, np.ndarray]]:
+        return {
+            "W1": {"m": np.zeros_like(self.W1), "v": np.zeros_like(self.W1)},
+            "b1": {"m": np.zeros_like(self.b1), "v": np.zeros_like(self.b1)},
+            "W2": {"m": np.zeros_like(self.W2), "v": np.zeros_like(self.W2)},
+            "b2": {"m": np.zeros_like(self.b2), "v": np.zeros_like(self.b2)},
+        }
+
+    def _adam_update(
+        self,
+        parameter: np.ndarray,
+        gradient: np.ndarray,
+        *,
+        state: dict[str, np.ndarray],
+        step: int,
+        beta1: float = 0.9,
+        beta2: float = 0.999,
+        epsilon: float = 1e-8,
+    ) -> np.ndarray:
+        grad = np.asarray(gradient, dtype=np.float64)
+        state["m"] = beta1 * state["m"] + (1.0 - beta1) * grad
+        state["v"] = beta2 * state["v"] + (1.0 - beta2) * (grad**2)
+        m_hat = state["m"] / (1.0 - beta1**step)
+        v_hat = state["v"] / (1.0 - beta2**step)
+        return parameter - self.learning_rate * m_hat / (np.sqrt(v_hat) + epsilon)

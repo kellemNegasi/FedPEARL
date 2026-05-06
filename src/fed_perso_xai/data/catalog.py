@@ -39,6 +39,10 @@ def _bank_marketing_transform(value: object) -> int:
     return int(_normalize_text(value) in {"yes", "1", "true"})
 
 
+def _loan_default_transform(value: object) -> int:
+    return int(_normalize_text(value) in {"yes", "1", "true", "default", "chargedoff"})
+
+
 def _replace_common_missing_tokens(frame: pd.DataFrame) -> pd.DataFrame:
     """Normalize textual missing-value markers before generic preprocessing."""
 
@@ -131,6 +135,47 @@ DEFAULT_DATASET_REGISTRY = DatasetRegistry(
             description=(
                 "OpenML Census-Income / Adult-style binary classification benchmark "
                 "(data_id=4535, about 224k rows)."
+            ),
+        ),
+        DatasetSpec(
+            key="loan_default",
+            display_name="Loan Default",
+            target_transform=_loan_default_transform,
+            source_type="csv",
+            csv_path="data/raw/loan_default/Loan_default.csv",
+            target_column="Default",
+            row_id_column="LoanID",
+            cleaning_hook=_replace_common_missing_tokens,
+            feature_type_overrides={
+                "Education": "categorical",
+                "EmploymentType": "categorical",
+                "MaritalStatus": "categorical",
+                "LoanPurpose": "categorical",
+                "HasMortgage": "categorical",
+                "HasDependents": "categorical",
+                "HasCoSigner": "categorical",
+            },
+            required_columns=(
+                "Age",
+                "Income",
+                "LoanAmount",
+                "CreditScore",
+                "MonthsEmployed",
+                "NumCreditLines",
+                "InterestRate",
+                "LoanTerm",
+                "DTIRatio",
+                "Education",
+                "EmploymentType",
+                "MaritalStatus",
+                "LoanPurpose",
+                "HasMortgage",
+                "HasDependents",
+                "HasCoSigner",
+            ),
+            description=(
+                "Kaggle Loan Default Prediction Dataset loaded from a local CSV for "
+                "binary credit-risk classification."
             ),
         ),
     ]

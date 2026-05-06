@@ -13,7 +13,8 @@ paths:
   cache_dir: data/cache/openml
 
 datasets:
-  - bank_marketing
+  # - bank_marketing
+  - loan_default
 
 seeds:
   - 42
@@ -26,7 +27,7 @@ partition:
   num_clients:
     - 5
     - 10
-    # - 15
+    - 15
   alphas:
     - 0.1
     - 0.3

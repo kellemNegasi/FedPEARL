@@ -87,7 +87,14 @@ def test_default_registry_builds_mlp_classifier() -> None:
     model = create_model(
         "mlp_classifier",
         n_features=4,
-        config=MLPConfig(epochs=2, batch_size=2, learning_rate=0.1, hidden_dim=8),
+        config=MLPConfig(
+            epochs=2,
+            batch_size=2,
+            learning_rate=0.1,
+            hidden_dim=8,
+            activation="tanh",
+            optimizer="adam",
+        ),
         registry=DEFAULT_MODEL_REGISTRY,
     )
     parameters = initialize_model_parameters(
@@ -98,6 +105,8 @@ def test_default_registry_builds_mlp_classifier() -> None:
     )
 
     assert len(model.get_parameters()) == 4
+    assert model.activation == "tanh"
+    assert model.optimizer == "adam"
     assert [parameter.shape for parameter in parameters] == [(4, 8), (8,), (8, 1), (1,)]
 
 

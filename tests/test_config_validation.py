@@ -84,3 +84,7 @@ def test_mlp_config_rejects_invalid_values() -> None:
         MLPConfig(hidden_dim=0)
     with pytest.raises(ValueError, match="learning_rate"):
         MLPConfig(learning_rate=0.0)
+    with pytest.raises(ValueError, match="activation"):
+        MLPConfig(activation="sigmoid")
+    with pytest.raises(ValueError, match="optimizer"):
+        MLPConfig(optimizer="rmsprop")

@@ -370,7 +370,15 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
         model_name = str(raw_model.get("name", "logistic_regression"))
         params = raw_model.get("params") or {
             key: raw_model[key]
-            for key in ("epochs", "batch_size", "learning_rate", "l2_regularization", "hidden_dim")
+            for key in (
+                "epochs",
+                "batch_size",
+                "learning_rate",
+                "l2_regularization",
+                "hidden_dim",
+                "activation",
+                "optimizer",
+            )
             if key in raw_model
         }
         param_grid = {
@@ -379,11 +387,13 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
             "learning_rate": [float(value) for value in _as_list(params.get("learning_rate", 0.05))],
             "l2_regularization": [
                 float(value)
-                for value in _as_list(params.get("l2_regularization", 0.0))
+                for value in _as_list(params.get("l2_regularization", 1e-4))
             ],
-            "hidden_dim": [int(value) for value in _as_list(params.get("hidden_dim", 64))],
+            "hidden_dim": [int(value) for value in _as_list(params.get("hidden_dim", 100))],
+            "activation": [str(value) for value in _as_list(params.get("activation", "relu"))],
+            "optimizer": [str(value) for value in _as_list(params.get("optimizer", "sgd"))],
         }
-        for epochs, batch_size, learning_rate, l2_regularization, hidden_dim in itertools.product(
+        for epochs, batch_size, learning_rate, l2_regularization, hidden_dim, activation, optimizer in itertools.product(
             _require_non_empty_list(f"model '{model_name}' params.epochs", param_grid["epochs"]),
             _require_non_empty_list(
                 f"model '{model_name}' params.batch_size",
@@ -401,6 +411,14 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
                 f"model '{model_name}' params.hidden_dim",
                 param_grid["hidden_dim"],
             ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.activation",
+                param_grid["activation"],
+            ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.optimizer",
+                param_grid["optimizer"],
+            ),
         ):
             if model_name == 'mlp_classifier':
                 config = MLPConfig(
@@ -409,10 +427,12 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
                     learning_rate=learning_rate,
                     l2_regularization=l2_regularization,
                     hidden_dim=hidden_dim,
+                    activation=activation,
+                    optimizer=optimizer,
                 )
                 default_label = (
                     f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-"
-                    f"l2{l2_regularization}-hidden{hidden_dim}"
+                    f"l2{l2_regularization}-hidden{hidden_dim}-act{activation}-opt{optimizer}"
                 )
             else:
                 config = LogisticRegressionConfig(

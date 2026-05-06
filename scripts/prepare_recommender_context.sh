@@ -69,18 +69,33 @@ SBATCH_SCRIPT="scripts/prepare_recommender_context.sbatch"
 # )
 
 # bank_marketing runs
-RUN_IDS=(
+# RUN_IDS=(
 # "federated-training-bank_marketing-20260506t100051005369+0000-logreg-15clients-alpha0.3-seed42-89223f1af61a"
 # "federated-training-bank_marketing-20260506t100051025065+0000-logreg-15clients-alpha1.0-seed42-8f824f9930fc"
 # "federated-training-bank_marketing-20260506t100054281100+0000-logreg-15clients-alpha10.0-seed42-d9fd3546c904"
-"federated-training-bank_marketing-20260506t100054920236+0000-logreg-5clients-alpha0.1-seed42-7c35429dff4e"
-"federated-training-bank_marketing-20260506t100055467077+0000-logreg-5clients-alpha0.3-seed42-9a4bff9f34a1"
-"federated-training-bank_marketing-20260506t100055574191+0000-logreg-10clients-alpha10.0-seed42-9199ddd82897"
-"federated-training-bank_marketing-20260506t100058395708+0000-logreg-10clients-alpha1.0-seed42-ba2e71fd4cdf"
-"federated-training-bank_marketing-20260506t100059638427+0000-logreg-5clients-alpha10.0-seed42-feddbbb362d9"
-"federated-training-bank_marketing-20260506t100059638440+0000-logreg-5clients-alpha1.0-seed42-6716ba670f5f"
-"federated-training-bank_marketing-20260506t100059645944+0000-logreg-10clients-alpha0.3-seed42-4005ec074133"
-"federated-training-bank_marketing-20260506t100059932037+0000-logreg-10clients-alpha0.1-seed42-675255e23062"
+# "federated-training-bank_marketing-20260506t100054920236+0000-logreg-5clients-alpha0.1-seed42-7c35429dff4e"
+# "federated-training-bank_marketing-20260506t100055467077+0000-logreg-5clients-alpha0.3-seed42-9a4bff9f34a1"
+# "federated-training-bank_marketing-20260506t100055574191+0000-logreg-10clients-alpha10.0-seed42-9199ddd82897"
+# "federated-training-bank_marketing-20260506t100058395708+0000-logreg-10clients-alpha1.0-seed42-ba2e71fd4cdf"
+# "federated-training-bank_marketing-20260506t100059638427+0000-logreg-5clients-alpha10.0-seed42-feddbbb362d9"
+# "federated-training-bank_marketing-20260506t100059638440+0000-logreg-5clients-alpha1.0-seed42-6716ba670f5f"
+# "federated-training-bank_marketing-20260506t100059645944+0000-logreg-10clients-alpha0.3-seed42-4005ec074133"
+# "federated-training-bank_marketing-20260506t100059932037+0000-logreg-10clients-alpha0.1-seed42-675255e23062"
+# )
+
+RUN_IDS=(
+"federated-training-loan_default-20260506t150506940283+0000-logreg-5clients-alpha10.0-seed42-4b46b580b199"
+"federated-training-loan_default-20260506t150513688715+0000-logreg-10clients-alpha0.3-seed42-ffc078cdbd9a"
+"federated-training-loan_default-20260506t150514510628+0000-logreg-5clients-alpha0.3-seed42-af8a57f89bda"
+"federated-training-loan_default-20260506t150515534664+0000-logreg-10clients-alpha10.0-seed42-eadd6c717a89"
+"federated-training-loan_default-20260506t150515535354+0000-logreg-15clients-alpha0.3-seed42-c30b4a3c12ed"
+"federated-training-loan_default-20260506t150516029127+0000-logreg-5clients-alpha1.0-seed42-b6d74e400440"
+"federated-training-loan_default-20260506t150516264799+0000-logreg-15clients-alpha10.0-seed42-99087037bae1"
+"federated-training-loan_default-20260506t150516265176+0000-logreg-15clients-alpha1.0-seed42-0a79319724d3"
+"federated-training-loan_default-20260506t150516449846+0000-logreg-15clients-alpha0.1-seed42-9c95533169ea"
+"federated-training-loan_default-20260506t150518932069+0000-logreg-5clients-alpha0.1-seed42-4e3b9873a6df"
+"federated-training-loan_default-20260506t150526008995+0000-logreg-10clients-alpha1.0-seed42-71744e771867"
+"federated-training-loan_default-20260506t150534943473+0000-logreg-10clients-alpha0.1-seed42-b01a52d5dd06"
 )
 
 mkdir -p "$(dirname "$RUN_ID_FILE")"

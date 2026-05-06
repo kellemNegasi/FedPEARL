@@ -149,8 +149,10 @@ class MLPConfig:
     epochs: int = 5
     batch_size: int = 64
     learning_rate: float = 0.05
-    l2_regularization: float = 0.0
-    hidden_dim: int = 64
+    l2_regularization: float = 1e-4
+    hidden_dim: int = 100
+    activation: str = "relu"
+    optimizer: str = "sgd"
 
     def __post_init__(self) -> None:
         _require_integer_at_least("epochs", self.epochs, minimum=1)
@@ -158,6 +160,16 @@ class MLPConfig:
         _require_positive("learning_rate", self.learning_rate)
         _require_non_negative("l2_regularization", self.l2_regularization)
         _require_integer_at_least("hidden_dim", self.hidden_dim, minimum=1)
+        normalized_activation = str(self.activation).strip().lower()
+        if normalized_activation not in {"relu", "tanh"}:
+            raise ValueError(
+                "activation must be one of: relu, tanh."
+            )
+        normalized_optimizer = str(self.optimizer).strip().lower()
+        if normalized_optimizer not in {"sgd", "adam"}:
+            raise ValueError(
+                "optimizer must be one of: sgd, adam."
+            )
 
 
 ModelConfig = LogisticRegressionConfig | MLPConfig

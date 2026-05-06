@@ -93,6 +93,19 @@ def test_default_dataset_registry_includes_large_adult_dataset() -> None:
     assert "224k" in spec.description
 
 
+def test_default_dataset_registry_includes_loan_default_csv_dataset() -> None:
+    from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
+
+    spec = DEFAULT_DATASET_REGISTRY.get("loan_default")
+
+    assert spec.source_type == "csv"
+    assert spec.csv_path == "data/raw/loan_default/Loan_default.csv"
+    assert spec.target_column == "Default"
+    assert spec.row_id_column == "LoanID"
+    assert spec.feature_type_overrides["LoanPurpose"] == "categorical"
+    assert "credit-risk" in spec.description
+
+
 def test_dataset_registry_supports_csv_backed_dataset(tmp_path) -> None:
     csv_path = tmp_path / "loan_default.csv"
     pd.DataFrame(
