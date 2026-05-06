@@ -55,9 +55,12 @@ class DatasetSpec:
 
     key: str
     display_name: str
-    openml_data_id: int
     target_transform: TargetTransform
+    openml_data_id: int | None = None
+    source_type: str = "openml"
+    csv_path: str | None = None
     target_column: str | None = None
+    row_id_column: str | None = None
     cleaning_hook: DatasetCleaningHook | None = None
     feature_type_overrides: dict[str, str] = field(default_factory=dict)
     required_columns: tuple[str, ...] = ()

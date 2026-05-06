@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from fed_perso_xai.data.catalog import DatasetSpec
+from fed_perso_xai.data.catalog import DatasetRegistry, DatasetSpec
 from fed_perso_xai.data.loaders import load_supported_dataset
 from fed_perso_xai.data.preprocessing import FrozenTabularPreprocessor
 from fed_perso_xai.utils.config import PreprocessingConfig
@@ -265,3 +265,39 @@ def test_dataset_loading_can_resolve_frame_embedded_target_when_openml_target_is
 
     assert dataset.X.columns.tolist() == ["feature_a", "feature_b"]
     assert dataset.y.tolist() == [1, 0, 1, 0]
+
+
+def test_csv_dataset_loading_uses_local_file_and_row_id_column(tmp_path) -> None:
+    csv_path = tmp_path / "loan_default.csv"
+    pd.DataFrame(
+        {
+            "LoanID": ["L1", "L2", "L3", "L4"],
+            "Income": [60000, 72000, 55000, 81000],
+            "HasMortgage": ["Yes", "No", "Yes", "No"],
+            "Default": [1, 0, 1, 0],
+        }
+    ).to_csv(csv_path, index=False)
+    spec = DatasetSpec(
+        key="loan_default_csv",
+        display_name="Loan Default CSV",
+        target_transform=lambda value: int(value),
+        source_type="csv",
+        csv_path=str(csv_path),
+        target_column="Default",
+        row_id_column="LoanID",
+        feature_type_overrides={"HasMortgage": "categorical"},
+        required_columns=("Income", "HasMortgage"),
+    )
+    registry = DatasetRegistry()
+    registry.register(spec)
+
+    dataset = load_supported_dataset(
+        "loan_default_csv",
+        cache_dir=tmp_path / "cache",
+        registry=registry,
+    )
+
+    assert dataset.X.columns.tolist() == ["Income", "HasMortgage"]
+    assert dataset.y.tolist() == [1, 0, 1, 0]
+    assert dataset.row_ids.tolist() == ["L1", "L2", "L3", "L4"]
+    assert dataset.source_metadata["provider"] == "csv"
