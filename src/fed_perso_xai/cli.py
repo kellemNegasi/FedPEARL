@@ -605,7 +605,7 @@ def main() -> None:
             ray_num_cpus=args.ray_num_cpus,
             simulation_resources={
                 "num_cpus": args.client_num_cpus,
-                "num_gpus": 0.0,
+                "num_gpus": args.client_num_gpus,
             },
             secure_aggregation=args.secure_aggregation,
             secure_num_helpers=args.secure_num_helpers,
@@ -855,7 +855,7 @@ def main() -> None:
                 clients=args.clients,
                 simulation_resources={
                     "num_cpus": args.client_num_cpus,
-                    "num_gpus": 0.0,
+                    "num_gpus": args.client_num_gpus,
                 },
                 secure_aggregation=args.secure_aggregation,
                 secure_num_helpers=args.secure_num_helpers,
@@ -993,11 +993,18 @@ def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -
         default="sgd",
         help="Local optimizer for `mlp_classifier`.",
     )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default="cpu",
+        help="Execution device for `mlp_classifier`.",
+    )
 
 
 def _add_simulation_resource_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ray-num-cpus", type=int, default=4)
     parser.add_argument("--client-num-cpus", type=float, default=1.0)
+    parser.add_argument("--client-num-gpus", type=float, default=0.0)
 
 
 def _build_artifact_paths(args: argparse.Namespace) -> ArtifactPaths:
@@ -1041,6 +1048,7 @@ def _build_model_config(args: argparse.Namespace) -> ModelConfig:
             hidden_dim=args.hidden_dim,
             activation=args.activation,
             optimizer=args.optimizer,
+            device=args.device,
             **common_kwargs,
         )
     return LogisticRegressionConfig(**common_kwargs)

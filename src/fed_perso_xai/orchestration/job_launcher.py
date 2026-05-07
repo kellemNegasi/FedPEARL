@@ -402,6 +402,7 @@ def _expand_model_entries(
                 "hidden_dim",
                 "activation",
                 "optimizer",
+                "device",
             )
             if key in raw_model
         }
@@ -416,8 +417,9 @@ def _expand_model_entries(
             "hidden_dim": [int(value) for value in _as_list(params.get("hidden_dim", 100))],
             "activation": [str(value) for value in _as_list(params.get("activation", "relu"))],
             "optimizer": [str(value) for value in _as_list(params.get("optimizer", "sgd"))],
+            "device": [str(value) for value in _as_list(params.get("device", "cpu"))],
         }
-        for epochs, batch_size, learning_rate, l2_regularization, hidden_dim, activation, optimizer in itertools.product(
+        for epochs, batch_size, learning_rate, l2_regularization, hidden_dim, activation, optimizer, device in itertools.product(
             _require_non_empty_list(f"model '{model_name}' params.epochs", param_grid["epochs"]),
             _require_non_empty_list(
                 f"model '{model_name}' params.batch_size",
@@ -443,6 +445,10 @@ def _expand_model_entries(
                 f"model '{model_name}' params.optimizer",
                 param_grid["optimizer"],
             ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.device",
+                param_grid["device"],
+            ),
         ):
             if model_name == 'mlp_classifier':
                 config = MLPConfig(
@@ -453,10 +459,11 @@ def _expand_model_entries(
                     hidden_dim=hidden_dim,
                     activation=activation,
                     optimizer=optimizer,
+                    device=device,
                 )
                 default_label = (
                     f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-"
-                    f"l2{l2_regularization}-hidden{hidden_dim}-act{activation}-opt{optimizer}"
+                    f"l2{l2_regularization}-hidden{hidden_dim}-act{activation}-opt{optimizer}-dev{device}"
                 )
             else:
                 config = LogisticRegressionConfig(

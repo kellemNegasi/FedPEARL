@@ -78,6 +78,7 @@ def _build_mlp_model(
         hidden_dim=config.hidden_dim,
         activation=config.activation,
         optimizer=config.optimizer,
+        device=config.device,
         learning_rate=config.learning_rate,
         batch_size=config.batch_size,
         local_epochs=config.epochs,

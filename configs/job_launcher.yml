@@ -15,9 +15,9 @@ paths:
 model_definitions_path: model_definitions.yml
 
 datasets:
-  # - bank_marketing
+  - bank_marketing
   # - loan_default
-  - cencus_income
+  # - cencus_income
 
 seeds:
   - 42
@@ -30,7 +30,7 @@ partition:
   num_clients:
     - 5
     - 10
-    - 15
+    # - 15
   alphas:
     - 0.1
     - 0.3

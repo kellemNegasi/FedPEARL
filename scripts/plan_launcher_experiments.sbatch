@@ -119,6 +119,7 @@ with experiments_path.open("w", encoding="utf-8") as handle:
                 "hidden_dim": getattr(experiment.model_config, "hidden_dim", None),
                 "activation": getattr(experiment.model_config, "activation", None),
                 "optimizer": getattr(experiment.model_config, "optimizer", None),
+                "device": getattr(experiment.model_config, "device", None),
             },
             "training": {
                 "rounds": experiment.rounds,

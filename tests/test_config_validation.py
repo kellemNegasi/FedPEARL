@@ -88,3 +88,5 @@ def test_mlp_config_rejects_invalid_values() -> None:
         MLPConfig(activation="sigmoid")
     with pytest.raises(ValueError, match="optimizer"):
         MLPConfig(optimizer="rmsprop")
+    with pytest.raises(ValueError, match="device"):
+        MLPConfig(device="tpu")

@@ -17,3 +17,16 @@ models:
       hidden_dim: 100
       activation: relu
       optimizer: adam
+      device: cpu
+
+  mlp-gpu-default:
+    name: mlp_classifier
+    params:
+      epochs: 5
+      batch_size: 256
+      learning_rate: 0.005
+      l2_regularization: 0.01
+      hidden_dim: 100
+      activation: relu
+      optimizer: adam
+      device: gpu

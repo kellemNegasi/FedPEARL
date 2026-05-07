@@ -153,6 +153,7 @@ class MLPConfig:
     hidden_dim: int = 100
     activation: str = "relu"
     optimizer: str = "sgd"
+    device: str = "cpu"
 
     def __post_init__(self) -> None:
         _require_integer_at_least("epochs", self.epochs, minimum=1)
@@ -169,6 +170,11 @@ class MLPConfig:
         if normalized_optimizer not in {"sgd", "adam"}:
             raise ValueError(
                 "optimizer must be one of: sgd, adam."
+            )
+        normalized_device = str(self.device).strip().lower()
+        if normalized_device not in {"cpu", "gpu"}:
+            raise ValueError(
+                "device must be one of: cpu, gpu."
             )
 
 

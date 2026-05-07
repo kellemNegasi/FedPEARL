@@ -15,6 +15,12 @@ Then submit the training array like so
 sbatch --array=0-11 scripts/train_predictive_array.sbatch job_launcher/plans/job_launcher__launcher__20260505T230705/launcher_experiments.jsonl
 ```
 
+To use GPU
+
+```bash
+LP_DEVICE=gpu CLIENT_NUM_GPUS=1 FORCE_TRAINING=1 SKIP_PREPARE=1 sbatch --array=0-11 scripts/train_predictive_array.sbatch job_launcher/plans/job_launcher__launcher__20260506T232947/launcher_experiments.jsonl
+```
+
 Then after that use this to plan the run and submit the slurms
 
 ```bash

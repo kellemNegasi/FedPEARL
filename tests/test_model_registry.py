@@ -94,6 +94,7 @@ def test_default_registry_builds_mlp_classifier() -> None:
             hidden_dim=8,
             activation="tanh",
             optimizer="adam",
+            device="cpu",
         ),
         registry=DEFAULT_MODEL_REGISTRY,
     )
@@ -107,6 +108,7 @@ def test_default_registry_builds_mlp_classifier() -> None:
     assert len(model.get_parameters()) == 4
     assert model.activation == "tanh"
     assert model.optimizer == "adam"
+    assert model.device == "cpu"
     assert [parameter.shape for parameter in parameters] == [(4, 8), (8,), (8, 1), (1,)]
 
 
