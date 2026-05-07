@@ -15,9 +15,9 @@ paths:
 model_definitions_path: model_definitions.yml
 
 datasets:
-  - bank_marketing
+  # - bank_marketing
   # - loan_default
-  # - cencus_income
+  - cencus_income
 
 seeds:
   - 42
@@ -30,7 +30,7 @@ partition:
   num_clients:
     - 5
     - 10
-    # - 15
+    - 15
   alphas:
     - 0.1
     - 0.3
@@ -69,13 +69,14 @@ explain_eval:
     enabled: true
     submit: false
     script_dir: plans/{dataset}/{model_name}/slurm
-    log_dir: logs
+    log_dir: logs/cencus_income
     job_name: explain-eval
     array_concurrency: 32
-    module_load: python/3.14.0
-    venv_path: .venv/bin/activate
+    module_load: python/3.12.3
+    venv_path: .venv312/bin/activate
     sbatch_args:
-      - --partition=main
+      - --partition=gpu
+      - --gres=gpu:tesla:1
       - --cpus-per-task=4
       - --mem=32G
       - --time=06:00:00
