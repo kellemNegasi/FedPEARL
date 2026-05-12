@@ -29,3 +29,5 @@ tracker
 *.ipynb_checkpoints
 ./notebooks/.ipynb_checkpoints/*
 plans
+*.out
+*.err

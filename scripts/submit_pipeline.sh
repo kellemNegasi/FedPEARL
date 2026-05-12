@@ -59,20 +59,20 @@ USAGE
 #   "federated-training-adult_income-20260503t135645220328+0000-logistic_regression-15clients-alpha10.0-seed42-dfa15b7a087a"
 # )
 # census_income runs
-# RUN_IDS=(
-# "federated-training-cencus_income-20260505t201144701891+0000-logreg-15clients-alpha0.3-seed42-cbf1f302be03"
-# "federated-training-cencus_income-20260505t201144898551+0000-logreg-5clients-alpha10.0-seed42-11e02098db5b"
-# "federated-training-cencus_income-20260505t201144927494+0000-logreg-10clients-alpha1.0-seed42-43d059ce5300"
-# "federated-training-cencus_income-20260505t201144965410+0000-logreg-10clients-alpha10.0-seed42-e2a118c54dd6"
-# "federated-training-cencus_income-20260505t201145083329+0000-logreg-15clients-alpha10.0-seed42-a5e99ffe6412"
-# "federated-training-cencus_income-20260505t201145183850+0000-logreg-10clients-alpha0.3-seed42-8e5937a1fefe"
-# "federated-training-cencus_income-20260505t201145721165+0000-logreg-10clients-alpha0.1-seed42-fa46be85d0ab"
-# "federated-training-cencus_income-20260505t201145890543+0000-logreg-5clients-alpha0.3-seed42-0dbcaf7ddce5"
-# "federated-training-cencus_income-20260505t201146187154+0000-logreg-5clients-alpha0.1-seed42-fbc771aca376"
-# "federated-training-cencus_income-20260505t201146298557+0000-logreg-15clients-alpha0.1-seed42-3c965b4d5942"
-# "federated-training-cencus_income-20260505t201146414429+0000-logreg-5clients-alpha1.0-seed42-286f05f2aa11"
-# "federated-training-cencus_income-20260505t201146706924+0000-logreg-15clients-alpha1.0-seed42-12483fcc7aa8"
-# )
+RUN_IDS=(
+"federated-training-cencus_income-20260505t201144701891+0000-logreg-15clients-alpha0.3-seed42-cbf1f302be03"
+"federated-training-cencus_income-20260505t201144898551+0000-logreg-5clients-alpha10.0-seed42-11e02098db5b"
+"federated-training-cencus_income-20260505t201144927494+0000-logreg-10clients-alpha1.0-seed42-43d059ce5300"
+"federated-training-cencus_income-20260505t201144965410+0000-logreg-10clients-alpha10.0-seed42-e2a118c54dd6"
+"federated-training-cencus_income-20260505t201145083329+0000-logreg-15clients-alpha10.0-seed42-a5e99ffe6412"
+"federated-training-cencus_income-20260505t201145183850+0000-logreg-10clients-alpha0.3-seed42-8e5937a1fefe"
+"federated-training-cencus_income-20260505t201145721165+0000-logreg-10clients-alpha0.1-seed42-fa46be85d0ab"
+"federated-training-cencus_income-20260505t201145890543+0000-logreg-5clients-alpha0.3-seed42-0dbcaf7ddce5"
+"federated-training-cencus_income-20260505t201146187154+0000-logreg-5clients-alpha0.1-seed42-fbc771aca376"
+"federated-training-cencus_income-20260505t201146298557+0000-logreg-15clients-alpha0.1-seed42-3c965b4d5942"
+"federated-training-cencus_income-20260505t201146414429+0000-logreg-5clients-alpha1.0-seed42-286f05f2aa11"
+"federated-training-cencus_income-20260505t201146706924+0000-logreg-15clients-alpha1.0-seed42-12483fcc7aa8"
+)
 
 
 # bank_marketing runs
@@ -91,20 +91,20 @@ USAGE
 # )
 
 # loan_default runs
-RUN_IDS=(
-"federated-training-loan_default-20260506t150506940283+0000-logreg-5clients-alpha10.0-seed42-4b46b580b199"
-"federated-training-loan_default-20260506t150513688715+0000-logreg-10clients-alpha0.3-seed42-ffc078cdbd9a"
-"federated-training-loan_default-20260506t150514510628+0000-logreg-5clients-alpha0.3-seed42-af8a57f89bda"
-"federated-training-loan_default-20260506t150515534664+0000-logreg-10clients-alpha10.0-seed42-eadd6c717a89"
-"federated-training-loan_default-20260506t150515535354+0000-logreg-15clients-alpha0.3-seed42-c30b4a3c12ed"
-"federated-training-loan_default-20260506t150516029127+0000-logreg-5clients-alpha1.0-seed42-b6d74e400440"
-"federated-training-loan_default-20260506t150516264799+0000-logreg-15clients-alpha10.0-seed42-99087037bae1"
-"federated-training-loan_default-20260506t150516265176+0000-logreg-15clients-alpha1.0-seed42-0a79319724d3"
-"federated-training-loan_default-20260506t150516449846+0000-logreg-15clients-alpha0.1-seed42-9c95533169ea"
-"federated-training-loan_default-20260506t150518932069+0000-logreg-5clients-alpha0.1-seed42-4e3b9873a6df"
-"federated-training-loan_default-20260506t150526008995+0000-logreg-10clients-alpha1.0-seed42-71744e771867"
-"federated-training-loan_default-20260506t150534943473+0000-logreg-10clients-alpha0.1-seed42-b01a52d5dd06"
-)
+# RUN_IDS=(
+# "federated-training-loan_default-20260506t150506940283+0000-logreg-5clients-alpha10.0-seed42-4b46b580b199"
+# "federated-training-loan_default-20260506t150513688715+0000-logreg-10clients-alpha0.3-seed42-ffc078cdbd9a"
+# "federated-training-loan_default-20260506t150514510628+0000-logreg-5clients-alpha0.3-seed42-af8a57f89bda"
+# "federated-training-loan_default-20260506t150515534664+0000-logreg-10clients-alpha10.0-seed42-eadd6c717a89"
+# "federated-training-loan_default-20260506t150515535354+0000-logreg-15clients-alpha0.3-seed42-c30b4a3c12ed"
+# "federated-training-loan_default-20260506t150516029127+0000-logreg-5clients-alpha1.0-seed42-b6d74e400440"
+# "federated-training-loan_default-20260506t150516264799+0000-logreg-15clients-alpha10.0-seed42-99087037bae1"
+# "federated-training-loan_default-20260506t150516265176+0000-logreg-15clients-alpha1.0-seed42-0a79319724d3"
+# "federated-training-loan_default-20260506t150516449846+0000-logreg-15clients-alpha0.1-seed42-9c95533169ea"
+# "federated-training-loan_default-20260506t150518932069+0000-logreg-5clients-alpha0.1-seed42-4e3b9873a6df"
+# "federated-training-loan_default-20260506t150526008995+0000-logreg-10clients-alpha1.0-seed42-71744e771867"
+# "federated-training-loan_default-20260506t150534943473+0000-logreg-10clients-alpha0.1-seed42-b01a52d5dd06"
+# )
 
 MODE_ARG="${1:-}"
 CLUSTERING_K_ARG="${2:-}"
@@ -165,7 +165,7 @@ elif [[ "$PERSONA_ASSIGNMENT_POLICY" == "fixed" ]]; then
 else
   LABEL_NAMESPACE="dirichlet_sampled"
 fi
-PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-10.0}"
+PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-0.5}"
 INSTANCE_TEST_SIZE="${INSTANCE_TEST_SIZE:-0.2}"
 INSTANCE_VALIDATION_SIZE="${INSTANCE_VALIDATION_SIZE:-0.1}"
 TRAIN_ROUNDS="${TRAIN_ROUNDS:-200}"
@@ -174,14 +174,14 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2048}"
 TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.005}"
 TRAIN_SVM_C="${TRAIN_SVM_C:-1.0}"
 TRAIN_SVM_INTERCEPT_SCALING="${TRAIN_SVM_INTERCEPT_SCALING:-1.0}"
-SKIP_LABELING="${SKIP_LABELING:-0}"
-CLUSTERING_K="${CLUSTERING_K_ARG:-${CLUSTERING_K:-3}}"
+SKIP_LABELING="${SKIP_LABELING:-1}"
+CLUSTERING_K="${CLUSTERING_K_ARG:-${CLUSTERING_K:-2}}"
 CLUSTERING_REPRESENTATION="${CLUSTERING_REPRESENTATION:-delta}"
 CLUSTERING_NORMALIZE_VECTOR="${CLUSTERING_NORMALIZE_VECTOR:-1}"
 CLUSTERING_NORMALIZATION_MODE="${CLUSTERING_NORMALIZATION_MODE:-l2}"
 CLUSTERING_DELTA_OVER_BASE_NORM="${CLUSTERING_DELTA_OVER_BASE_NORM:-1}"
 CLUSTERING_ASSIGNMENT_MARGIN="${CLUSTERING_ASSIGNMENT_MARGIN:-0.05}"
-CLUSTERING_NUM_RESTARTS="${CLUSTERING_NUM_RESTARTS:-5}"
+CLUSTERING_NUM_RESTARTS="${CLUSTERING_NUM_RESTARTS:-10}"
 CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS_ARG:-${CLUSTERING_WARMUP_ROUNDS:-15}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP_ARG:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-1}}"
 TOP_K="${TOP_K_ARG:-${TOP_K:-1,3,5,8}}"
