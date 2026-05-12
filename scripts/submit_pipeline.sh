@@ -4,13 +4,17 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/submit_pipeline.sh [clustered] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
+  scripts/submit_pipeline.sh [MODE] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
 
 Behavior:
   Default: submit both plain and secure runs for every RUN_ID.
+  plain: submit one plain run for every RUN_ID.
+  secure: submit one secure run for every RUN_ID.
   clustered: submit one clustered run for every RUN_ID.
 
 Environment variables:
+  RUN_IDS_CSV=
+                                    Optional comma-separated RUN_ID override.
   LABEL_NAMESPACE=
                                     Shared label namespace used by label/train/eval.
                                     Defaults to FIXED_PERSONA for fixed policy or dirichlet_sampled otherwise.
@@ -59,7 +63,7 @@ USAGE
 #   "federated-training-adult_income-20260503t135645220328+0000-logistic_regression-15clients-alpha10.0-seed42-dfa15b7a087a"
 # )
 # census_income runs
-RUN_IDS=(
+DEFAULT_RUN_IDS=(
 "federated-training-cencus_income-20260505t201144701891+0000-logreg-15clients-alpha0.3-seed42-cbf1f302be03"
 "federated-training-cencus_income-20260505t201144898551+0000-logreg-5clients-alpha10.0-seed42-11e02098db5b"
 "federated-training-cencus_income-20260505t201144927494+0000-logreg-10clients-alpha1.0-seed42-43d059ce5300"
@@ -120,6 +124,12 @@ case "${MODE_ARG,,}" in
       "secure"
     )
     ;;
+  plain|--plain)
+    SUBMISSION_MODES=("plain")
+    ;;
+  secure|--secure)
+    SUBMISSION_MODES=("secure")
+    ;;
   clustered|--clustered)
     SUBMISSION_MODES=("clustered")
     ;;
@@ -133,6 +143,17 @@ case "${MODE_ARG,,}" in
     exit 2
     ;;
 esac
+
+if [[ -n "${RUN_IDS_CSV:-}" ]]; then
+  IFS=',' read -r -a RUN_IDS <<< "$RUN_IDS_CSV"
+else
+  RUN_IDS=("${DEFAULT_RUN_IDS[@]}")
+fi
+
+if [[ "${#RUN_IDS[@]}" -eq 0 ]]; then
+  echo "ERROR: at least one RUN_ID is required." >&2
+  exit 2
+fi
 
 if [[ -n "$CLUSTERING_K_ARG" && ! "$CLUSTERING_K_ARG" =~ ^[0-9]+$ ]]; then
   echo "ERROR: CLUSTERING_K must be a positive integer." >&2

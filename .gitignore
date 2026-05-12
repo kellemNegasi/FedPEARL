@@ -31,3 +31,4 @@ tracker
 plans
 *.out
 *.err
+sweep_results
