@@ -801,9 +801,9 @@ def _log_clustered_evaluation_summary(
     aggregate = evaluation.get("aggregate", {})
     if isinstance(aggregate, Mapping):
         LOGGER.info(
-            "Clustered recommender evaluation aggregate pearson_at_3=%s pearson_at_5=%s precision_at_3=%s precision_at_5=%s",
-            _format_optional_metric(aggregate.get("pearson_at_3")),
-            _format_optional_metric(aggregate.get("pearson_at_5")),
+            "Clustered recommender evaluation aggregate spearman_at_3=%s spearman_at_5=%s precision_at_3=%s precision_at_5=%s",
+            _format_optional_metric(aggregate.get("spearman_at_3")),
+            _format_optional_metric(aggregate.get("spearman_at_5")),
             _format_optional_metric(aggregate.get("precision_at_3")),
             _format_optional_metric(aggregate.get("precision_at_5")),
         )
@@ -815,11 +815,11 @@ def _log_clustered_evaluation_summary(
         if not isinstance(cluster_aggregate, Mapping):
             cluster_aggregate = {}
         LOGGER.info(
-            "Clustered recommender final cluster cluster_id=%s client_count=%s pearson_at_3=%s pearson_at_5=%s precision_at_3=%s precision_at_5=%s",
+            "Clustered recommender final cluster cluster_id=%s client_count=%s spearman_at_3=%s spearman_at_5=%s precision_at_3=%s precision_at_5=%s",
             cluster.get("cluster_id"),
             cluster.get("client_count"),
-            _format_optional_metric(cluster_aggregate.get("pearson_at_3")),
-            _format_optional_metric(cluster_aggregate.get("pearson_at_5")),
+            _format_optional_metric(cluster_aggregate.get("spearman_at_3")),
+            _format_optional_metric(cluster_aggregate.get("spearman_at_5")),
             _format_optional_metric(cluster_aggregate.get("precision_at_3")),
             _format_optional_metric(cluster_aggregate.get("precision_at_5")),
         )
@@ -849,22 +849,22 @@ def _log_clustered_evaluation_summary(
     for client_id in sorted(set(plain_by_client).intersection(clustered_by_client)):
         plain_row = plain_by_client[client_id]
         clustered_row = clustered_by_client[client_id]
-        delta_at_3 = _metric_delta(clustered_row, plain_row, "pearson_at_3")
-        delta_at_5 = _metric_delta(clustered_row, plain_row, "pearson_at_5")
+        delta_at_3 = _metric_delta(clustered_row, plain_row, "spearman_at_3")
+        delta_at_5 = _metric_delta(clustered_row, plain_row, "spearman_at_5")
         deltas.append(
             {
                 "client_id": client_id,
                 "cluster_id": clustered_row.get("cluster_id"),
-                "delta_pearson_at_3": delta_at_3,
-                "delta_pearson_at_5": delta_at_5,
+                "delta_spearman_at_3": delta_at_3,
+                "delta_spearman_at_5": delta_at_5,
             }
         )
 
     improved_at_3 = sum(
-        1 for item in deltas if isinstance(item["delta_pearson_at_3"], float) and item["delta_pearson_at_3"] > 0.0
+        1 for item in deltas if isinstance(item["delta_spearman_at_3"], float) and item["delta_spearman_at_3"] > 0.0
     )
     improved_at_5 = sum(
-        1 for item in deltas if isinstance(item["delta_pearson_at_5"], float) and item["delta_pearson_at_5"] > 0.0
+        1 for item in deltas if isinstance(item["delta_spearman_at_5"], float) and item["delta_spearman_at_5"] > 0.0
     )
     LOGGER.info(
         "Clustered recommender comparison_vs_plain clients=%s improved_at_3=%s improved_at_5=%s",
@@ -874,15 +874,15 @@ def _log_clustered_evaluation_summary(
     )
 
     for label, rows in (
-        ("worst_at_3", sorted(deltas, key=lambda item: _sort_metric_value(item["delta_pearson_at_3"]))[:3]),
-        ("best_at_3", sorted(deltas, key=lambda item: _sort_metric_value(item["delta_pearson_at_3"]), reverse=True)[:3]),
+        ("worst_at_3", sorted(deltas, key=lambda item: _sort_metric_value(item["delta_spearman_at_3"]))[:3]),
+        ("best_at_3", sorted(deltas, key=lambda item: _sort_metric_value(item["delta_spearman_at_3"]), reverse=True)[:3]),
     ):
         formatted_rows = [
             {
                 "client_id": str(item["client_id"]),
                 "cluster_id": item["cluster_id"],
-                "delta_pearson_at_3": _format_optional_metric(item["delta_pearson_at_3"]),
-                "delta_pearson_at_5": _format_optional_metric(item["delta_pearson_at_5"]),
+                "delta_spearman_at_3": _format_optional_metric(item["delta_spearman_at_3"]),
+                "delta_spearman_at_5": _format_optional_metric(item["delta_spearman_at_5"]),
             }
             for item in rows
         ]

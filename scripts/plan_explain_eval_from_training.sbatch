@@ -115,6 +115,81 @@ if len(experiments) != len(experiment_rows):
         f"Experiment manifest row count {len(experiment_rows)} does not match "
         f"expanded config count {len(experiments)}."
     )
+
+
+def _assert_equal(label: str, expected: object, actual: object, *, index: int) -> None:
+    if expected != actual:
+        raise ValueError(
+            f"Mismatch for experiment index {index}: {label} expected {expected!r}, got {actual!r}."
+        )
+
+
+def _validate_manifest_row(*, row: dict[str, object], experiment: object, index: int) -> None:
+    _assert_equal("experiment_index", index, int(row["experiment_index"]), index=index)
+    _assert_equal("dataset_name", experiment.dataset_name, row["dataset_name"], index=index)
+    _assert_equal("seed", experiment.seed, int(row["seed"]), index=index)
+    _assert_equal("num_clients", experiment.num_clients, int(row["num_clients"]), index=index)
+    _assert_equal("alpha", experiment.alpha, float(row["alpha"]), index=index)
+    _assert_equal("model_label", experiment.model_label, row["model_label"], index=index)
+    _assert_equal("model_name", experiment.model_name, row["model_name"], index=index)
+
+
+def _validate_training_result(
+    *,
+    row: dict[str, object],
+    result_experiment: dict[str, object],
+    training_summary: dict[str, object],
+    index: int,
+) -> None:
+    _assert_equal(
+        "result experiment_index",
+        index,
+        int(result_experiment["experiment_index"]),
+        index=index,
+    )
+    _assert_equal(
+        "result dataset_name",
+        row["dataset_name"],
+        result_experiment["dataset_name"],
+        index=index,
+    )
+    _assert_equal("result seed", int(row["seed"]), int(result_experiment["seed"]), index=index)
+    _assert_equal(
+        "result num_clients",
+        int(row["num_clients"]),
+        int(result_experiment["num_clients"]),
+        index=index,
+    )
+    _assert_equal(
+        "result alpha",
+        float(row["alpha"]),
+        float(result_experiment["alpha"]),
+        index=index,
+    )
+    _assert_equal(
+        "result model_label",
+        row["model_label"],
+        result_experiment["model_label"],
+        index=index,
+    )
+    _assert_equal(
+        "result model_name",
+        row["model_name"],
+        result_experiment["model_name"],
+        index=index,
+    )
+
+    planned_run_id = str(row.get("planned_run_id") or "").strip()
+    actual_run_id = str(training_summary["run_id"]).strip()
+    if planned_run_id and planned_run_id != actual_run_id:
+        raise ValueError(
+            f"Mismatch for experiment index {index}: planned_run_id {planned_run_id!r} "
+            f"does not match training_summary.run_id {actual_run_id!r}. "
+            "This usually means the launcher_experiments.jsonl or training_results directory "
+            "belongs to a different dataset/config run."
+        )
+
+
 result_paths = sorted(results_dir.glob("training_result_*.json"))
 results_by_index: dict[int, dict[str, object]] = {}
 for path in result_paths:
@@ -137,10 +212,20 @@ if missing:
 runs: list[dict[str, object]] = []
 for row in experiment_rows:
     index = int(row["experiment_index"])
-    result = results_by_index[index]
-    training_summary = result["training_summary"]
-    run_id = str(training_summary["run_id"])
     experiment = experiments[index]
+    _validate_manifest_row(row=row, experiment=experiment, index=index)
+
+    result = results_by_index[index]
+    result_experiment = result.get("experiment") or {}
+    training_summary = result["training_summary"]
+    _validate_training_result(
+        row=row,
+        result_experiment=result_experiment,
+        training_summary=training_summary,
+        index=index,
+    )
+
+    run_id = str(training_summary["run_id"])
     plan_path = _plan_path(explain_cfg=explain_cfg, experiment=experiment, run_id=run_id)
     plan_summary = plan_explain_eval_jobs(
         run_id=run_id,

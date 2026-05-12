@@ -580,7 +580,7 @@ Important artifacts:
 python3 -m fed_perso_xai evaluate-recommender --run-id <run_id> --selection <selection_id> --persona lay --clients all
 ```
 
-Evaluation scores the candidate contexts with the trained global recommender, builds a deterministic ground-truth order from the held-out pairwise labels, and reports aggregate/client metrics such as Pearson rank correlation and `precision_at_k`.
+Evaluation scores the candidate contexts with the trained global recommender, builds a deterministic ground-truth order from the held-out pairwise labels, and reports aggregate/client metrics such as Spearman rank correlation and `precision_at_k`.
 
 ## Artifact Contract
 
