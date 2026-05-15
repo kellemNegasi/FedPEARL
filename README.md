@@ -1,6 +1,6 @@
-# fed-perso-xai
+# FedPEARL: Federated Preference-based Explanation Alignment and Ranking Learning
 
-`fed-perso-xai` is the baseline implementation for the larger federated Perso-XAI project. This repository now covers predictive-model training, post-training local explanation/evaluation, recommender-context preparation, simulated pairwise preference labeling, and federated explanation-recommender training and evaluation. The predictive and recommender federated stages share the same optional secure-aggregation path and common artifact conventions.
+`FedPEARL` is the implementation of Federated Preference-based Explanation Alignment and Ranking Learning. This repository covers predictive-model training, post-training local explanation/evaluation, recommender-context preparation, simulated pairwise preference labeling, and federated explanation-recommender training and evaluation. The predictive and recommender federated stages share the same optional secure-aggregation path and common artifact conventions.
 
 Implemented now:
 
@@ -580,7 +580,7 @@ Important artifacts:
 python3 -m fed_perso_xai evaluate-recommender --run-id <run_id> --selection <selection_id> --persona lay --clients all
 ```
 
-Evaluation scores the candidate contexts with the trained global recommender, builds a deterministic ground-truth order from the held-out pairwise labels, and reports aggregate/client metrics such as Pearson rank correlation and `precision_at_k`.
+Evaluation scores the candidate contexts with the trained global recommender, builds a deterministic ground-truth order from the held-out pairwise labels, and reports aggregate/client metrics such as Spearman rank correlation and `precision_at_k`.
 
 ## Artifact Contract
 

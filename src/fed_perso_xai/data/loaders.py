@@ -1,4 +1,4 @@
-"""Dataset loading helpers for supported OpenML tabular datasets."""
+"""Dataset loading helpers for supported tabular datasets."""
 
 from __future__ import annotations
 
@@ -55,12 +55,20 @@ def load_supported_dataset(
     """Load a supported dataset from the registry."""
 
     spec = (registry or DEFAULT_DATASET_REGISTRY).get(dataset_name)
-    return load_openml_dataset(spec, cache_dir=cache_dir)
+    if spec.source_type == "openml":
+        return load_openml_dataset(spec, cache_dir=cache_dir)
+    if spec.source_type == "csv":
+        return load_csv_dataset(spec)
+    raise ValueError(
+        f"Unsupported source_type {spec.source_type!r} for dataset '{spec.key}'."
+    )
 
 
 def load_openml_dataset(spec: DatasetSpec, cache_dir: Path) -> RawTabularDataset:
     """Load and normalize one OpenML-backed tabular dataset."""
 
+    if spec.openml_data_id is None:
+        raise ValueError(f"Dataset '{spec.key}' is missing openml_data_id.")
     bunch = fetch_openml(
         data_id=spec.openml_data_id,
         as_frame=True,
@@ -110,6 +118,67 @@ def load_openml_dataset(spec: DatasetSpec, cache_dir: Path) -> RawTabularDataset
             "openml_version": (
                 getattr(bunch, "details", {}).get("version") if hasattr(bunch, "details") else None
             ),
+            "cleaning_hook": None if spec.cleaning_hook is None else spec.cleaning_hook.__name__,
+        },
+    )
+
+
+def load_csv_dataset(spec: DatasetSpec) -> RawTabularDataset:
+    """Load and normalize one CSV-backed tabular dataset."""
+
+    if not spec.csv_path:
+        raise ValueError(f"Dataset '{spec.key}' is missing csv_path.")
+    if not spec.target_column:
+        raise ValueError(f"Dataset '{spec.key}' is missing target_column.")
+
+    csv_path = Path(spec.csv_path)
+    frame = pd.read_csv(csv_path)
+    if spec.row_id_column:
+        if spec.row_id_column not in frame.columns:
+            raise ValueError(
+                f"Dataset '{spec.key}' is missing row_id_column {spec.row_id_column!r}."
+            )
+        row_ids = np.asarray(frame[spec.row_id_column].astype(str).to_numpy(copy=True), dtype=str)
+    else:
+        row_ids = np.asarray(frame.index.astype(str), dtype=str)
+
+    if spec.target_column not in frame.columns:
+        raise ValueError(
+            f"Dataset '{spec.key}' is missing target_column {spec.target_column!r}."
+        )
+
+    drop_columns = [spec.target_column]
+    if spec.row_id_column:
+        drop_columns.append(spec.row_id_column)
+    X = frame.drop(columns=drop_columns).copy()
+    y_raw = frame[spec.target_column].to_numpy(copy=True)
+
+    if spec.cleaning_hook is not None:
+        before_shape = X.shape
+        X = spec.cleaning_hook(X)
+        if X.shape[0] != before_shape[0]:
+            raise ValueError(
+                f"Dataset cleaning hook for '{spec.key}' changed the number of rows from "
+                f"{before_shape[0]} to {X.shape[0]}. Stage-1 cleaning hooks must preserve rows."
+            )
+    _validate_raw_schema(X, spec)
+
+    y = np.asarray([spec.target_transform(value) for value in y_raw], dtype=np.int64)
+    unique_labels = np.unique(y)
+    if unique_labels.tolist() != [0, 1]:
+        raise ValueError(
+            f"Dataset '{spec.key}' did not produce binary labels in {{0,1}}: {unique_labels}."
+        )
+    return RawTabularDataset(
+        name=spec.key,
+        display_name=spec.display_name,
+        X=X.reset_index(drop=True),
+        y=y,
+        row_ids=row_ids,
+        spec=spec,
+        source_metadata={
+            "provider": "csv",
+            "path": str(csv_path),
             "cleaning_hook": None if spec.cleaning_hook is None else spec.cleaning_hook.__name__,
         },
     )

@@ -52,6 +52,8 @@ from fed_perso_xai.utils.config import (
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
+    ModelConfig,
     PartitionConfig,
     RecommenderClusteringConfig,
     RecommenderFederatedTrainingConfig,
@@ -85,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     centralized_parser = subparsers.add_parser(
         "train-centralized",
-        help="Train the centralized logistic-regression baseline.",
+        help="Train the centralized predictive baseline.",
     )
     centralized_parser.add_argument("--dataset", required=True, choices=dataset_choices)
     centralized_parser.add_argument("--seed", type=int, default=42)
@@ -603,7 +605,7 @@ def main() -> None:
             ray_num_cpus=args.ray_num_cpus,
             simulation_resources={
                 "num_cpus": args.client_num_cpus,
-                "num_gpus": 0.0,
+                "num_gpus": args.client_num_gpus,
             },
             secure_aggregation=args.secure_aggregation,
             secure_num_helpers=args.secure_num_helpers,
@@ -853,7 +855,7 @@ def main() -> None:
                 clients=args.clients,
                 simulation_resources={
                     "num_cpus": args.client_num_cpus,
-                    "num_gpus": 0.0,
+                    "num_gpus": args.client_num_gpus,
                 },
                 secure_aggregation=args.secure_aggregation,
                 secure_num_helpers=args.secure_num_helpers,
@@ -972,12 +974,37 @@ def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.05)
-    parser.add_argument("--l2-regularization", type=float, default=0.0)
+    parser.add_argument("--l2-regularization", type=float, default=1e-4)
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=100,
+        help="Hidden-layer width for `mlp_classifier`.",
+    )
+    parser.add_argument(
+        "--activation",
+        choices=("relu", "tanh"),
+        default="relu",
+        help="Hidden-layer activation for `mlp_classifier`.",
+    )
+    parser.add_argument(
+        "--optimizer",
+        choices=("sgd", "adam"),
+        default="sgd",
+        help="Local optimizer for `mlp_classifier`.",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default="cpu",
+        help="Execution device for `mlp_classifier`.",
+    )
 
 
 def _add_simulation_resource_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ray-num-cpus", type=int, default=4)
     parser.add_argument("--client-num-cpus", type=float, default=1.0)
+    parser.add_argument("--client-num-gpus", type=float, default=0.0)
 
 
 def _build_artifact_paths(args: argparse.Namespace) -> ArtifactPaths:
@@ -1009,13 +1036,22 @@ def _build_artifact_paths_or_none(args: argparse.Namespace) -> ArtifactPaths | N
     return _build_artifact_paths(args)
 
 
-def _build_model_config(args: argparse.Namespace) -> LogisticRegressionConfig:
-    return LogisticRegressionConfig(
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        l2_regularization=args.l2_regularization,
-    )
+def _build_model_config(args: argparse.Namespace) -> ModelConfig:
+    common_kwargs = {
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'l2_regularization': args.l2_regularization,
+    }
+    if args.model == 'mlp_classifier':
+        return MLPConfig(
+            hidden_dim=args.hidden_dim,
+            activation=args.activation,
+            optimizer=args.optimizer,
+            device=args.device,
+            **common_kwargs,
+        )
+    return LogisticRegressionConfig(**common_kwargs)
 
 
 def _build_shap_override_args(args: argparse.Namespace) -> dict[str, object]:

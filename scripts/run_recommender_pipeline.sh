@@ -67,6 +67,7 @@ Environment variables:
   TOP_K=1,3,5                           Comma-separated precision@k cutoffs.
   FORCE_TRAINING=0                      Pass --force to train-recommender-federated.
   EVAL_OUTPUT=                          Optional path for evaluate-recommender JSON output.
+  SWEEP_SUMMARY_OUTPUT=                 Optional path for compact sweep metrics JSON output.
 
 Pipeline:
   1. label-recommender-context
@@ -156,6 +157,7 @@ CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}"
 TOP_K="${TOP_K:-1,3,5}"
 FORCE_TRAINING="${FORCE_TRAINING:-1}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
+SWEEP_SUMMARY_OUTPUT="${SWEEP_SUMMARY_OUTPUT:-}"
 
 if [[ -z "${PYTHON:-}" ]]; then
   if command -v python >/dev/null 2>&1; then
@@ -168,6 +170,11 @@ if [[ -z "${PYTHON:-}" ]]; then
     echo "ERROR: no Python executable found. Set PYTHON=/path/to/python." >&2
     exit 1
   fi
+fi
+
+if [[ -n "$SWEEP_SUMMARY_OUTPUT" && -z "$EVAL_OUTPUT" ]]; then
+  echo "ERROR: SWEEP_SUMMARY_OUTPUT requires EVAL_OUTPUT to also be set." >&2
+  exit 2
 fi
 
 if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
@@ -343,6 +350,13 @@ echo "==> Evaluating federated recommender"
   --recommender "$RECOMMENDER_TYPE" \
   --top-k "$TOP_K" \
   "${EVAL_EXTRA[@]}"
+
+if [[ -n "$SWEEP_SUMMARY_OUTPUT" ]]; then
+  echo "==> Extracting compact sweep metrics"
+  "$PYTHON" scripts/extract_recommender_sweep_metrics.py \
+    --input "$EVAL_OUTPUT" \
+    --output "$SWEEP_SUMMARY_OUTPUT"
+fi
 
 echo "==> Recommender pipeline complete"
 echo "Run ID: $RUN_ID"

@@ -8,12 +8,17 @@ from typing import Any, Callable
 import numpy as np
 
 from fed_perso_xai.models.base import TabularClassifier
-from fed_perso_xai.models.logistic_regression import LogisticRegressionModel, initialize_parameters
-from fed_perso_xai.utils.config import LogisticRegressionConfig
+from fed_perso_xai.models.logistic_regression import LogisticRegressionModel, initialize_parameters as initialize_logistic_parameters
+from fed_perso_xai.models.mlp import MLPClassifierModel, initialize_parameters as initialize_mlp_parameters
+from fed_perso_xai.utils.config import LogisticRegressionConfig, MLPConfig
 
 
 ModelBuilder = Callable[[int, Any], TabularClassifier]
 ParameterInitializer = Callable[[int, Any], list[np.ndarray]]
+
+_MODEL_NAME_COMPACT_ALIASES = {
+    "logistic_regression": "logreg",
+}
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,23 @@ def _build_logistic_regression_model(
     )
 
 
+def _build_mlp_model(
+    n_features: int,
+    config: MLPConfig,
+) -> MLPClassifierModel:
+    return MLPClassifierModel(
+        n_features=n_features,
+        hidden_dim=config.hidden_dim,
+        activation=config.activation,
+        optimizer=config.optimizer,
+        device=config.device,
+        learning_rate=config.learning_rate,
+        batch_size=config.batch_size,
+        local_epochs=config.epochs,
+        l2_regularization=config.l2_regularization,
+    )
+
+
 DEFAULT_MODEL_REGISTRY = ModelRegistry(
     specs=[
         ModelSpec(
@@ -71,8 +93,18 @@ DEFAULT_MODEL_REGISTRY = ModelRegistry(
             display_name="Logistic Regression",
             config_type=LogisticRegressionConfig,
             build_model=_build_logistic_regression_model,
-            initialize_parameters=lambda n_features, config: initialize_parameters(n_features),
-        )
+            initialize_parameters=lambda n_features, config: initialize_logistic_parameters(n_features),
+        ),
+        ModelSpec(
+            key="mlp_classifier",
+            display_name="MLP Classifier",
+            config_type=MLPConfig,
+            build_model=_build_mlp_model,
+            initialize_parameters=lambda n_features, config: initialize_mlp_parameters(
+                n_features,
+                config.hidden_dim,
+            ),
+        ),
     ]
 )
 
@@ -123,3 +155,9 @@ def initialize_model_parameters(
             f"received {type(config).__name__}."
         )
     return spec.initialize_parameters(n_features, config)
+
+
+def compact_model_name(model_name: str) -> str:
+    """Return a short filesystem-friendly identifier for a model name."""
+
+    return _MODEL_NAME_COMPACT_ALIASES.get(str(model_name), str(model_name))

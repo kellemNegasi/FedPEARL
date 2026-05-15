@@ -250,7 +250,7 @@ def test_train_federated_recommender_rejects_unsafe_filenames(
         )
 
 
-def test_evaluate_ranked_scores_uses_global_pairwise_order_and_pearson() -> None:
+def test_evaluate_ranked_scores_uses_global_pairwise_order_and_spearman() -> None:
     labels = pd.DataFrame(
         {
             "dataset_index": [0, 1, 2],
@@ -272,11 +272,11 @@ def test_evaluate_ranked_scores_uses_global_pairwise_order_and_pearson() -> None
     assert metrics["precision_at_2"] == pytest.approx(1.0)
     assert metrics["precision_at_5"] == pytest.approx(1.0)
     assert metrics["precision_at_8"] == pytest.approx(1.0)
-    assert metrics["pearson"] == pytest.approx(1.0)
-    assert metrics["pearson_at_1"] == pytest.approx(1.0)
-    assert metrics["pearson_at_2"] == pytest.approx(1.0)
-    assert metrics["pearson_at_5"] == pytest.approx(1.0)
-    assert metrics["pearson_at_8"] == pytest.approx(1.0)
+    assert metrics["spearman"] == pytest.approx(1.0)
+    assert metrics["spearman_at_1"] == pytest.approx(1.0)
+    assert metrics["spearman_at_2"] == pytest.approx(1.0)
+    assert metrics["spearman_at_5"] == pytest.approx(1.0)
+    assert metrics["spearman_at_8"] == pytest.approx(1.0)
 
 
 def test_evaluate_grouped_ranked_scores_keeps_instances_separate() -> None:
@@ -305,9 +305,9 @@ def test_evaluate_grouped_ranked_scores_keeps_instances_separate() -> None:
     assert metrics["instance_count"] == 2
     assert metrics["aggregate"]["precision_at_1"] == pytest.approx(1.0)
     assert metrics["aggregate"]["precision_at_8"] == pytest.approx(1.0)
-    assert metrics["aggregate"]["pearson"] == pytest.approx(1.0)
-    assert metrics["aggregate"]["pearson_at_1"] == pytest.approx(1.0)
-    assert metrics["aggregate"]["pearson_at_8"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["spearman"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["spearman_at_1"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["spearman_at_8"] == pytest.approx(1.0)
     assert "dataset_index" not in metrics["aggregate"]
 
 
@@ -629,7 +629,7 @@ def test_train_federated_recommender_writes_model_metadata_and_evaluation(tmp_pa
 
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["aggregate"]["precision_at_1"] == pytest.approx(1.0)
-    assert evaluation["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert evaluation["aggregate"]["spearman"] == pytest.approx(1.0)
     assert "dataset_index" not in evaluation["aggregate"]
     assert "dataset_index" not in metadata["evaluation"]
 
@@ -791,6 +791,6 @@ def test_train_federated_recommender_supports_explicit_pairwise_logistic_selecti
 
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["aggregate"]["precision_at_1"] == pytest.approx(1.0)
-    assert evaluation["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert evaluation["aggregate"]["spearman"] == pytest.approx(1.0)
     assert "dataset_index" not in evaluation["aggregate"]
     assert "dataset_index" not in metadata["evaluation"]

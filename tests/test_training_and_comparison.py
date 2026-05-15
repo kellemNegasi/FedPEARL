@@ -21,6 +21,7 @@ from fed_perso_xai.utils.config import (
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
     PartitionConfig,
 )
 
@@ -336,3 +337,70 @@ def test_compare_baselines_end_to_end(mock_openml, tmp_path) -> None:
                 paths=paths,
             )
         )
+
+
+
+def test_centralized_mlp_training_smoke_path(mock_openml, tmp_path) -> None:
+    mock_openml("adult_income")
+    paths = _build_paths(tmp_path)
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=31,
+            paths=paths,
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+
+    result_dir, summary = train_centralized_from_prepared(
+        CentralizedTrainingConfig(
+            dataset_name="adult_income",
+            seed=31,
+            paths=paths,
+            model_name="mlp_classifier",
+            model=MLPConfig(epochs=2, batch_size=4, learning_rate=0.05, hidden_dim=8),
+        )
+    )
+
+    assert (result_dir / "model_parameters.npz").exists()
+    assert summary["config"]["model_name"] == "mlp_classifier"
+    assert summary["evaluation"]["predictive"]["splits"]["global_eval"]["metrics"]["accuracy"] >= 0.0
+
+
+def test_federated_mlp_training_smoke_path(mock_openml, tmp_path) -> None:
+    mock_openml("adult_income")
+    paths = _build_paths(tmp_path)
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=32,
+            paths=paths,
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+
+    artifacts, summary = train_federated_from_prepared(
+        FederatedTrainingConfig(
+            dataset_name="adult_income",
+            seed=32,
+            paths=paths,
+            model_name="mlp_classifier",
+            model=MLPConfig(
+                epochs=1,
+                batch_size=4,
+                learning_rate=0.01,
+                hidden_dim=8,
+                activation="tanh",
+                optimizer="adam",
+            ),
+            num_clients=3,
+            alpha=1.0,
+            rounds=1,
+            simulation_backend="debug-sequential",
+        )
+    )
+
+    assert artifacts.model_artifact_path.exists()
+    assert summary["model_type"] == "mlp_classifier"
+    assert summary["training_success"] is True
+    assert summary["rounds_completed"] == 1

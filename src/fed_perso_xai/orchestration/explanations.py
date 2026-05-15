@@ -14,7 +14,7 @@ from fed_perso_xai.data.serialization import load_client_datasets
 from fed_perso_xai.explainers import DEFAULT_EXPLAINER_REGISTRY, make_explainer
 from fed_perso_xai.fl.client import ClientData
 from fed_perso_xai.models import create_model, load_global_model
-from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
+from fed_perso_xai.utils.config import ArtifactPaths
 from fed_perso_xai.utils.paths import (
     centralized_run_dir,
     federated_run_dir,
@@ -276,17 +276,27 @@ def load_saved_model_for_explanations(
 
     config_payload = json.loads(config_path.read_text(encoding="utf-8"))
     model_name = str(config_payload.get("model_name", "logistic_regression"))
-    model_cfg = LogisticRegressionConfig(**dict(config_payload.get("model", {}) or {}))
+    model_cfg = build_model_config(model_name, dict(config_payload.get("model", {}) or {}))
 
     data = np.load(model_path, allow_pickle=False)
-    weights = np.asarray(data["weights"], dtype=np.float64)
-    bias = np.asarray(data["bias"], dtype=np.float64).reshape(1)
+    if "parameter_count" in data:
+        parameter_count = int(np.asarray(data["parameter_count"], dtype=np.int64).reshape(-1)[0])
+        parameters = [
+            np.asarray(data[f"parameter_{index}"], dtype=np.float64)
+            for index in range(parameter_count)
+        ]
+        n_features = int(config_payload.get("n_features") or parameters[0].shape[0])
+    else:
+        weights = np.asarray(data["weights"], dtype=np.float64)
+        bias = np.asarray(data["bias"], dtype=np.float64).reshape(1)
+        parameters = [weights, bias]
+        n_features = int(weights.shape[0])
     model = create_model(
         model_name,
-        n_features=int(weights.shape[0]),
+        n_features=n_features,
         config=model_cfg,
     )
-    model.set_parameters([weights, bias])
+    model.set_parameters(parameters)
     return model, result_dir
 
 

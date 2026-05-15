@@ -77,3 +77,82 @@ def test_dataset_registry_extensibility(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(ValueError):
         registry.register(spec)
+
+
+
+def test_default_dataset_registry_includes_large_adult_dataset() -> None:
+    from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
+
+    spec = DEFAULT_DATASET_REGISTRY.get("adult_income_large")
+    alias_spec = DEFAULT_DATASET_REGISTRY.get("cencus_income")
+
+    assert spec.openml_data_id == 4535
+    assert spec.target_column == "V42"
+    assert spec.display_name == "Cencus Income"
+    assert alias_spec == spec
+    assert "224k" in spec.description
+
+
+def test_default_dataset_registry_includes_loan_default_csv_dataset() -> None:
+    from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
+
+    spec = DEFAULT_DATASET_REGISTRY.get("loan_default")
+
+    assert spec.source_type == "csv"
+    assert spec.csv_path == "data/raw/loan_default/Loan_default.csv"
+    assert spec.target_column == "Default"
+    assert spec.row_id_column == "LoanID"
+    assert spec.feature_type_overrides["LoanPurpose"] == "categorical"
+    assert "credit-risk" in spec.description
+
+
+def test_dataset_registry_supports_csv_backed_dataset(tmp_path) -> None:
+    csv_path = tmp_path / "loan_default.csv"
+    pd.DataFrame(
+        {
+            "LoanID": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12"],
+            "Income": [10, 20, 15, 30, 18, 25, 12, 22, 16, 35, 14, 28],
+            "LoanPurpose": [
+                "Business",
+                "Home",
+                "Auto",
+                "Business",
+                "Home",
+                "Auto",
+                "Business",
+                "Home",
+                "Auto",
+                "Business",
+                "Home",
+                "Auto",
+            ],
+            "Default": [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        }
+    ).to_csv(csv_path, index=False)
+
+    registry = DatasetRegistry()
+    spec = DatasetSpec(
+        key="loan_default_csv",
+        display_name="Loan Default CSV",
+        target_transform=lambda value: int(value),
+        source_type="csv",
+        csv_path=str(csv_path),
+        target_column="Default",
+        row_id_column="LoanID",
+        required_columns=("Income", "LoanPurpose"),
+    )
+    registry.register(spec)
+
+    result = prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="loan_default_csv",
+            seed=5,
+            paths=_build_paths(tmp_path),
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        ),
+        registry=registry,
+    )
+
+    assert result.prepared_artifacts.root_dir.exists()
+    assert result.federated_artifacts.partition_metadata_path.exists()
+    assert registry.get("loan_default_csv") == spec

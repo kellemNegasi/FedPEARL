@@ -116,6 +116,10 @@ with experiments_path.open("w", encoding="utf-8") as handle:
                 "batch_size": experiment.model_config.batch_size,
                 "learning_rate": experiment.model_config.learning_rate,
                 "l2_regularization": experiment.model_config.l2_regularization,
+                "hidden_dim": getattr(experiment.model_config, "hidden_dim", None),
+                "activation": getattr(experiment.model_config, "activation", None),
+                "optimizer": getattr(experiment.model_config, "optimizer", None),
+                "device": getattr(experiment.model_config, "device", None),
             },
             "training": {
                 "rounds": experiment.rounds,

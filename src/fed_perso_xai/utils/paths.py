@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fed_perso_xai.data.catalog import compact_dataset_name
 from fed_perso_xai.utils.config import ArtifactPaths
 
 
@@ -16,7 +17,7 @@ def format_alpha(alpha: float) -> str:
 def prepared_dir(paths: ArtifactPaths, dataset_name: str, seed: int) -> Path:
     """Return the directory containing shared prepared-data artifacts."""
 
-    return paths.prepared_root / dataset_name / f"seed_{seed}"
+    return paths.prepared_root / compact_dataset_name(dataset_name) / f"seed_{seed}"
 
 
 def partition_root(
@@ -30,7 +31,7 @@ def partition_root(
 
     return (
         base_dir
-        / dataset_name
+        / compact_dataset_name(dataset_name)
         / f"{num_clients}_clients"
         / f"alpha_{format_alpha(alpha)}"
         / f"seed_{seed}"
@@ -53,7 +54,7 @@ def client_dir(
 def centralized_run_dir(paths: ArtifactPaths, dataset_name: str, seed: int) -> Path:
     """Return the result directory for one centralized baseline run."""
 
-    return paths.centralized_root / dataset_name / f"seed_{seed}"
+    return paths.centralized_root / compact_dataset_name(dataset_name) / f"seed_{seed}"
 
 
 def federated_run_dir(
@@ -67,7 +68,7 @@ def federated_run_dir(
 
     return (
         paths.federated_root
-        / dataset_name
+        / compact_dataset_name(dataset_name)
         / f"{num_clients}_clients"
         / f"alpha_{format_alpha(alpha)}"
         / f"seed_{seed}"

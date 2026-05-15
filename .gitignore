@@ -20,7 +20,8 @@ results
 .env
 job_launcher
 logs
-notebooks/artifacts
+notebooks/artifacts/
+notebooks/**/*.csv
 notebooks/.ipynb_checkpoints/*
 # recommender_evaluation_*
 *.pdf
@@ -28,3 +29,10 @@ tracker
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 ./notebooks/.ipynb_checkpoints/*
+plans
+*.out
+*.err
+sweep_results
+figure/**
+!figure/
+!figure/**/

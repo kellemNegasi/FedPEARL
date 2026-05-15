@@ -29,6 +29,9 @@ ray = [
     "ray>=2.9,<3.0",
     "packaging<26.0",
 ]
+torch = [
+    "torch>=2.2",
+]
 
 [project.scripts]
 fed-perso-xai = "fed_perso_xai.cli:main"

@@ -46,9 +46,9 @@ def test_federated_run_artifact_dir_accepts_single_safe_segment(tmp_path: Path) 
 
     run_dir = federated_run_artifact_dir(
         paths,
-        "federated-training-adult_income-20260424t120000z-logistic_regression-seed7",
+        "federated-training-adult_income-20260424t120000z-logreg-seed7",
     )
 
     assert run_dir == paths.federated_root / "runs" / (
-        "federated-training-adult_income-20260424t120000z-logistic_regression-seed7"
+        "federated-training-adult_income-20260424t120000z-logreg-seed7"
     )

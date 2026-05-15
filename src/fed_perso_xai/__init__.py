@@ -8,6 +8,7 @@ from .utils.config import (
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
     PartitionConfig,
     PreprocessingConfig,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "DataPreparationConfig",
     "FederatedTrainingConfig",
     "LogisticRegressionConfig",
+    "MLPConfig",
     "PartitionConfig",
     "PreprocessingConfig",
     "run_explain_eval_job",

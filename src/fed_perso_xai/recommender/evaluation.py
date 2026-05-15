@@ -19,9 +19,9 @@ def is_recommender_metric_key(key: object) -> bool:
     if not isinstance(key, str):
         return False
     return (
-        key == "pearson"
+        key == "spearman"
         or key.startswith("precision_at_")
-        or key.startswith("pearson_at_")
+        or key.startswith("spearman_at_")
     )
 
 
@@ -97,11 +97,17 @@ def precision_at_k(
     return float(len(pred_top & truth_top) / limit)
 
 
-def pearson_rank_correlation(
+def _average_ranks(values: Sequence[float]) -> np.ndarray:
+    """Return average ranks for the provided values."""
+
+    return pd.Series(list(values), dtype=float).rank(method="average").to_numpy(dtype=float)
+
+
+def spearman_rank_correlation(
     predicted_scores: Mapping[str, float],
     ground_truth_order: Sequence[str],
 ) -> float:
-    """Compute Pearson correlation between predicted and ground-truth rank positions."""
+    """Compute Spearman correlation between predicted and ground-truth rank positions."""
 
     predicted_order = order_scores(predicted_scores)
     pred_rank = {variant: idx for idx, variant in enumerate(predicted_order)}
@@ -109,20 +115,20 @@ def pearson_rank_correlation(
     variants = sorted(set(pred_rank) & set(truth_rank))
     if len(variants) < 2:
         return 0.0
-    pred = np.asarray([pred_rank[variant] for variant in variants], dtype=float)
-    truth = np.asarray([truth_rank[variant] for variant in variants], dtype=float)
+    pred = _average_ranks([float(pred_rank[variant]) for variant in variants])
+    truth = _average_ranks([float(truth_rank[variant]) for variant in variants])
     if float(np.std(pred)) == 0.0 or float(np.std(truth)) == 0.0:
         return 0.0
     corr = float(np.corrcoef(pred, truth)[0, 1])
     return 0.0 if not np.isfinite(corr) else corr
 
 
-def pearson_at_k(
+def spearman_at_k(
     predicted_order: Sequence[str],
     ground_truth_order: Sequence[str],
     k: int,
 ) -> float:
-    """Compute Pearson correlation over truncated top-k rank positions.
+    """Compute Spearman correlation over truncated top-k rank positions.
 
     Variants outside the top-k window receive the fallback rank ``k``. This keeps
     the metric sensitive to agreement near the head of the ranking while still
@@ -140,8 +146,8 @@ def pearson_at_k(
 
     pred_rank = {str(variant): idx for idx, variant in enumerate(predicted_order[:limit])}
     truth_rank = {str(variant): idx for idx, variant in enumerate(ground_truth_order[:limit])}
-    pred = np.asarray([float(pred_rank.get(variant, limit)) for variant in variants], dtype=float)
-    truth = np.asarray([float(truth_rank.get(variant, limit)) for variant in variants], dtype=float)
+    pred = _average_ranks([float(pred_rank.get(variant, limit)) for variant in variants])
+    truth = _average_ranks([float(truth_rank.get(variant, limit)) for variant in variants])
     if float(np.std(pred)) == 0.0 or float(np.std(truth)) == 0.0:
         return 0.0
     corr = float(np.corrcoef(pred, truth)[0, 1])
@@ -172,13 +178,13 @@ def evaluate_ranked_scores(
     metrics: dict[str, object] = {
         "ground_truth_order": ground_truth,
         "predicted_order": predicted_order,
-        "pearson": pearson_rank_correlation(predicted_scores, ground_truth),
+        "spearman": spearman_rank_correlation(predicted_scores, ground_truth),
         "variant_count": int(len(set(ground_truth) & set(predicted_order))),
     }
     for k in top_k:
         limit = int(k)
         metrics[f"precision_at_{limit}"] = precision_at_k(predicted_order, ground_truth, limit)
-        metrics[f"pearson_at_{limit}"] = pearson_at_k(predicted_order, ground_truth, limit)
+        metrics[f"spearman_at_{limit}"] = spearman_at_k(predicted_order, ground_truth, limit)
     return metrics
 
 
@@ -218,12 +224,12 @@ def evaluate_grouped_ranked_scores(
             "candidate_count": int(candidate_group["method_variant"].astype(str).nunique()),
             "pair_count": int(len(pair_group)),
             "variant_count": int(metrics.get("variant_count", 0)),
-            "pearson": float(metrics.get("pearson", 0.0)),
+            "spearman": float(metrics.get("spearman", 0.0)),
             "ground_truth_order": list(metrics.get("ground_truth_order", [])),
             "predicted_order": list(metrics.get("predicted_order", [])),
         }
         for key, value in metrics.items():
-            if key.startswith("precision_at_") or key.startswith("pearson_at_"):
+            if key.startswith("precision_at_") or key.startswith("spearman_at_"):
                 instance_row[key] = float(value)
         instance_metrics.append(instance_row)
 

@@ -14,20 +14,30 @@ from typing import Any
 
 import yaml
 
+from fed_perso_xai.data.catalog import compact_dataset_name
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.explain_eval import plan_explain_eval_jobs
 from fed_perso_xai.orchestration.federated_training import (
     train_federated_from_partitions,
 )
+from fed_perso_xai.models.registry import compact_model_name
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
+    ModelConfig,
     PartitionConfig,
     PreprocessingConfig,
 )
 from fed_perso_xai.utils.paths import partition_root
+
+_MAX_FILENAME_COMPONENT_LENGTH = 255
+_ATOMIC_TMP_SUFFIX_RESERVE = 48
+_MAX_PLAN_BASENAME_LENGTH = _MAX_FILENAME_COMPONENT_LENGTH - _ATOMIC_TMP_SUFFIX_RESERVE
+_MAX_PLAN_RUN_MARKER_LENGTH = 40
+_MAX_PLAN_PREFIX_LENGTH = _MAX_PLAN_BASENAME_LENGTH - len("__") - _MAX_PLAN_RUN_MARKER_LENGTH - len(".jsonl")
 
 
 @dataclass(frozen=True)
@@ -40,7 +50,7 @@ class LauncherExperiment:
     alpha: float
     model_label: str
     model_name: str
-    model_config: LogisticRegressionConfig
+    model_config: ModelConfig
     rounds: int
     strategy_name: str
     simulation_backend: str
@@ -170,6 +180,7 @@ def run_job_launcher(
                     plan_path=plan_path,
                     array_range=str(plan_summary["array_range"]),
                     run_id=run_id,
+                    experiment=experiment,
                 )
                 run_record["slurm_script_path"] = str(script_path)
                 if should_submit:
@@ -189,7 +200,25 @@ def _load_launcher_yaml(config_path: Path) -> dict[str, Any]:
         payload = yaml.safe_load(handle) or {}
     if not isinstance(payload, dict):
         raise ValueError(f"Launcher config must be a mapping: {config_path}")
+    model_definitions_path = payload.get("model_definitions_path")
+    if model_definitions_path is not None:
+        resolved_model_definitions_path = (config_path.parent / str(model_definitions_path)).resolve()
+        payload["_model_definitions"] = _load_model_definitions_yaml(resolved_model_definitions_path)
+        payload["_model_definitions_path"] = str(resolved_model_definitions_path)
     return payload
+
+
+def _load_model_definitions_yaml(definitions_path: Path) -> dict[str, Any]:
+    with definitions_path.open("r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"Model definitions config must be a mapping: {definitions_path}")
+    definitions = payload.get("models", payload)
+    if not isinstance(definitions, dict):
+        raise ValueError(
+            f"Model definitions file must contain a mapping of model keys: {definitions_path}"
+        )
+    return definitions
 
 
 def _build_paths(raw_paths: dict[str, Any]) -> ArtifactPaths:
@@ -312,7 +341,10 @@ def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:
     ]
     model_entries = _require_non_empty_list(
         "models or model",
-        _expand_model_entries(_get_model_config(raw_config)),
+        _expand_model_entries(
+            _get_model_config(raw_config),
+            model_definitions=raw_config.get("_model_definitions"),
+        ),
     )
 
     experiments: list[LauncherExperiment] = []
@@ -343,7 +375,11 @@ def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:
     return experiments
 
 
-def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
+def _expand_model_entries(
+    raw_models: Any,
+    *,
+    model_definitions: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     if raw_models is None:
         raw_models = [{"name": "logistic_regression"}]
     if isinstance(raw_models, dict) and "name" not in raw_models:
@@ -354,12 +390,20 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
 
     entries: list[dict[str, Any]] = []
     for raw_model in _require_non_empty_list("models or model", _as_list(raw_models)):
-        if not isinstance(raw_model, dict):
-            raw_model = {"name": str(raw_model)}
+        raw_model = _resolve_model_entry(raw_model, model_definitions=model_definitions)
         model_name = str(raw_model.get("name", "logistic_regression"))
         params = raw_model.get("params") or {
             key: raw_model[key]
-            for key in ("epochs", "batch_size", "learning_rate", "l2_regularization")
+            for key in (
+                "epochs",
+                "batch_size",
+                "learning_rate",
+                "l2_regularization",
+                "hidden_dim",
+                "activation",
+                "optimizer",
+                "device",
+            )
             if key in raw_model
         }
         param_grid = {
@@ -368,10 +412,14 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
             "learning_rate": [float(value) for value in _as_list(params.get("learning_rate", 0.05))],
             "l2_regularization": [
                 float(value)
-                for value in _as_list(params.get("l2_regularization", 0.0))
+                for value in _as_list(params.get("l2_regularization", 1e-4))
             ],
+            "hidden_dim": [int(value) for value in _as_list(params.get("hidden_dim", 100))],
+            "activation": [str(value) for value in _as_list(params.get("activation", "relu"))],
+            "optimizer": [str(value) for value in _as_list(params.get("optimizer", "sgd"))],
+            "device": [str(value) for value in _as_list(params.get("device", "cpu"))],
         }
-        for epochs, batch_size, learning_rate, l2_regularization in itertools.product(
+        for epochs, batch_size, learning_rate, l2_regularization, hidden_dim, activation, optimizer, device in itertools.product(
             _require_non_empty_list(f"model '{model_name}' params.epochs", param_grid["epochs"]),
             _require_non_empty_list(
                 f"model '{model_name}' params.batch_size",
@@ -385,18 +433,111 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
                 f"model '{model_name}' params.l2_regularization",
                 param_grid["l2_regularization"],
             ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.hidden_dim",
+                param_grid["hidden_dim"],
+            ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.activation",
+                param_grid["activation"],
+            ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.optimizer",
+                param_grid["optimizer"],
+            ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.device",
+                param_grid["device"],
+            ),
         ):
-            config = LogisticRegressionConfig(
-                epochs=epochs,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
-                l2_regularization=l2_regularization,
-            )
-            label = raw_model.get("label") or (
-                f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-l2{l2_regularization}"
-            )
+            if model_name == 'mlp_classifier':
+                config = MLPConfig(
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    learning_rate=learning_rate,
+                    l2_regularization=l2_regularization,
+                    hidden_dim=hidden_dim,
+                    activation=activation,
+                    optimizer=optimizer,
+                    device=device,
+                )
+                default_label = (
+                    f"{model_name}-epochs{epochs}-batch{batch_size}-lr{learning_rate}-"
+                    f"l2{l2_regularization}-hidden{hidden_dim}-act{activation}-opt{optimizer}-dev{device}"
+                )
+            else:
+                config = LogisticRegressionConfig(
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    learning_rate=learning_rate,
+                    l2_regularization=l2_regularization,
+                )
+                default_label = (
+                    f"{compact_model_name(model_name)}-epochs{epochs}-batch{batch_size}-"
+                    f"lr{learning_rate}-l2{l2_regularization}"
+                )
+            label = raw_model.get("label") or default_label
             entries.append({"label": label, "name": model_name, "config": config})
     return entries
+
+
+def _resolve_model_entry(
+    raw_model: Any,
+    *,
+    model_definitions: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(raw_model, dict):
+        if "ref" in raw_model:
+            return _merge_model_definition(
+                ref_name=str(raw_model["ref"]),
+                override=raw_model,
+                model_definitions=model_definitions,
+            )
+        return raw_model
+
+    model_token = str(raw_model)
+    if model_definitions and model_token in model_definitions:
+        return _merge_model_definition(
+            ref_name=model_token,
+            override={},
+            model_definitions=model_definitions,
+        )
+    return {"name": model_token}
+
+
+def _merge_model_definition(
+    *,
+    ref_name: str,
+    override: dict[str, Any],
+    model_definitions: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not model_definitions:
+        raise ValueError(
+            f"Model reference '{ref_name}' was requested, but no model_definitions_path is configured."
+        )
+    try:
+        definition = model_definitions[ref_name]
+    except KeyError as exc:
+        available = ", ".join(sorted(model_definitions))
+        raise ValueError(
+            f"Unknown model definition '{ref_name}'. Available definitions: {available}."
+        ) from exc
+    if not isinstance(definition, dict):
+        raise ValueError(f"Model definition '{ref_name}' must be a mapping.")
+
+    merged = dict(definition)
+    merged_params = dict(definition.get("params") or {})
+    override_params = dict(override.get("params") or {})
+    if override_params:
+        merged_params.update(override_params)
+        merged["params"] = merged_params
+    elif "params" in definition:
+        merged["params"] = merged_params
+
+    for key, value in override.items():
+        if key not in {"ref", "params"}:
+            merged[key] = value
+    return merged
 
 
 def _get_model_config(raw_config: dict[str, Any]) -> Any:
@@ -457,9 +598,14 @@ def _build_training_config(
 
 
 def _plan_path(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment, run_id: str) -> Path:
-    plan_dir = Path(str(explain_cfg.get("plan_dir", "job_launcher/plans")))
+    plan_dir = _resolve_formatted_output_dir(
+        template=explain_cfg.get("plan_dir", "job_launcher/plans"),
+        experiment=experiment,
+    )
     plan_dir.mkdir(parents=True, exist_ok=True)
-    return plan_dir / f"{_plan_stem(explain_cfg=explain_cfg, experiment=experiment)}__{_safe_segment(run_id)}.jsonl"
+    plan_prefix = _plan_file_prefix(explain_cfg=explain_cfg, experiment=experiment)
+    run_marker = _plan_run_marker(run_id)
+    return plan_dir / f"{plan_prefix}__{run_marker}.jsonl"
 
 
 def _write_slurm_array_script(
@@ -468,8 +614,12 @@ def _write_slurm_array_script(
     plan_path: Path,
     array_range: str,
     run_id: str,
+    experiment: LauncherExperiment,
 ) -> Path:
-    script_dir = Path(str(slurm_cfg.get("script_dir", "job_launcher/slurm")))
+    script_dir = _resolve_formatted_output_dir(
+        template=slurm_cfg.get("script_dir", "job_launcher/slurm"),
+        experiment=experiment,
+    )
     script_dir.mkdir(parents=True, exist_ok=True)
     script_path = script_dir / f"{plan_path.stem}.sbatch"
     concurrency = slurm_cfg.get("array_concurrency")
@@ -642,16 +792,31 @@ def _render_run_id(template: Any, experiment: LauncherExperiment) -> str | None:
     if template is None:
         return None
     return str(template).format(
-        dataset=experiment.dataset_name,
+        dataset=compact_dataset_name(experiment.dataset_name),
         seed=experiment.seed,
         num_clients=experiment.num_clients,
         alpha=experiment.alpha,
         model_label=experiment.model_label,
-        model_name=experiment.model_name,
+        model_name=compact_model_name(experiment.model_name),
         rounds=experiment.rounds,
         strategy=experiment.strategy_name,
         simulation_backend=experiment.simulation_backend,
     )
+
+
+def _resolve_formatted_output_dir(*, template: Any, experiment: LauncherExperiment) -> Path:
+    rendered = str(template).format(
+        dataset=compact_dataset_name(experiment.dataset_name),
+        seed=experiment.seed,
+        num_clients=experiment.num_clients,
+        alpha=experiment.alpha,
+        model_label=experiment.model_label,
+        model_name=compact_model_name(experiment.model_name),
+        rounds=experiment.rounds,
+        strategy=experiment.strategy_name,
+        simulation_backend=experiment.simulation_backend,
+    )
+    return Path(rendered)
 
 
 def _explain_plan_signature(*, explain_cfg: dict[str, Any]) -> str:
@@ -673,10 +838,31 @@ def _explain_plan_signature(*, explain_cfg: dict[str, Any]) -> str:
 def _plan_stem(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment) -> str:
     plan_signature = _explain_plan_signature(explain_cfg=explain_cfg)
     return (
-        f"{experiment.dataset_name}__clients-{experiment.num_clients}"
+        f"{compact_dataset_name(experiment.dataset_name)}__clients-{experiment.num_clients}"
         f"__alpha-{experiment.alpha}__seed-{experiment.seed}"
         f"__{experiment.model_label}__plan-{plan_signature}"
     )
+
+
+def _plan_file_prefix(*, explain_cfg: dict[str, Any], experiment: LauncherExperiment) -> str:
+    return _shorten_segment(
+        _plan_stem(explain_cfg=explain_cfg, experiment=experiment),
+        max_length=_MAX_PLAN_PREFIX_LENGTH,
+    )
+
+
+def _plan_run_marker(run_id: str) -> str:
+    safe_run_id = _safe_segment(run_id)
+    timestamp_match = re.search(r"(\d{8}t\d{6,})", safe_run_id)
+    suffix_match = re.search(r"-([0-9a-f]{8,})$", safe_run_id)
+    if timestamp_match or suffix_match:
+        parts = ["run"]
+        if timestamp_match:
+            parts.append(timestamp_match.group(1))
+        if suffix_match:
+            parts.append(suffix_match.group(1)[:12])
+        return _shorten_segment("-".join(parts), max_length=_MAX_PLAN_RUN_MARKER_LENGTH)
+    return _shorten_segment(f"run-{safe_run_id}", max_length=_MAX_PLAN_RUN_MARKER_LENGTH)
 
 
 def _handle_matching_plan_outputs(
@@ -684,18 +870,24 @@ def _handle_matching_plan_outputs(
     explain_cfg: dict[str, Any],
     experiment: LauncherExperiment,
 ) -> list[str]:
-    plan_dir = Path(str(explain_cfg.get("plan_dir", "job_launcher/plans")))
-    script_dir = Path(str((explain_cfg.get("slurm") or {}).get("script_dir", "job_launcher/slurm")))
-    plan_stem = _plan_stem(explain_cfg=explain_cfg, experiment=experiment)
-    matching_plans = sorted(plan_dir.glob(f"{plan_stem}__*.jsonl"))
-    matching_scripts = sorted(script_dir.glob(f"{plan_stem}__*.sbatch"))
+    plan_dir = _resolve_formatted_output_dir(
+        template=explain_cfg.get("plan_dir", "job_launcher/plans"),
+        experiment=experiment,
+    )
+    script_dir = _resolve_formatted_output_dir(
+        template=(explain_cfg.get("slurm") or {}).get("script_dir", "job_launcher/slurm"),
+        experiment=experiment,
+    )
+    plan_prefix = _plan_file_prefix(explain_cfg=explain_cfg, experiment=experiment)
+    matching_plans = sorted(plan_dir.glob(f"{plan_prefix}__*.jsonl"))
+    matching_scripts = sorted(script_dir.glob(f"{plan_prefix}__*.sbatch"))
     if not matching_plans and not matching_scripts:
         return []
 
     overwrite_matching = bool(explain_cfg.get("overwrite_matching_plans", False))
     message = (
         "Found existing explain/eval launcher outputs for the same configuration "
-        f"({len(matching_plans)} plan(s), {len(matching_scripts)} script(s)) under stem '{plan_stem}'."
+        f"({len(matching_plans)} plan(s), {len(matching_scripts)} script(s)) under stem '{plan_prefix}'."
     )
     if overwrite_matching:
         for path in [*matching_plans, *matching_scripts]:
@@ -760,3 +952,14 @@ def _safe_segment(value: str) -> str:
         .replace(" ", "-")
         .replace(":", "-")
     )
+
+
+def _shorten_segment(value: str, *, max_length: int) -> str:
+    text = _safe_segment(value)
+    if len(text) <= max_length:
+        return text
+    if max_length < 17:
+        raise ValueError(f"max_length must be at least 17 characters, got {max_length}.")
+    digest = sha256(text.encode("utf-8")).hexdigest()[:12]
+    prefix_length = max_length - len("--") - len(digest)
+    return f"{text[:prefix_length]}--{digest}"

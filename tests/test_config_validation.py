@@ -7,6 +7,7 @@ from fed_perso_xai.utils.config import (
     DataPreparationConfig,
     FederatedTrainingConfig,
     LogisticRegressionConfig,
+    MLPConfig,
     PartitionConfig,
     PreprocessingConfig,
     RecommenderFederatedTrainingConfig,
@@ -75,3 +76,17 @@ def test_top_level_configs_reject_invalid_common_values() -> None:
         DataPreparationConfig(dataset_name="")
     with pytest.raises(ValueError, match="num_clients"):
         ComparisonConfig(dataset_name="adult_income", seed=1, num_clients=1, alpha=1.0)
+
+
+
+def test_mlp_config_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError, match="hidden_dim"):
+        MLPConfig(hidden_dim=0)
+    with pytest.raises(ValueError, match="learning_rate"):
+        MLPConfig(learning_rate=0.0)
+    with pytest.raises(ValueError, match="activation"):
+        MLPConfig(activation="sigmoid")
+    with pytest.raises(ValueError, match="optimizer"):
+        MLPConfig(optimizer="rmsprop")
+    with pytest.raises(ValueError, match="device"):
+        MLPConfig(device="tpu")

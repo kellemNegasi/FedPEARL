@@ -12,8 +12,12 @@ paths:
   comparison_root: comparisons
   cache_dir: data/cache/openml
 
+model_definitions_path: model_definitions.yml
+
 datasets:
-  - adult_income
+  # - bank_marketing
+  # - loan_default
+  - cencus_income
 
 seeds:
   - 42
@@ -36,13 +40,7 @@ partition:
   max_retries: 50
 
 models:
-  - label: logreg-default
-    name: logistic_regression
-    params:
-      epochs: 5
-      batch_size: 64
-      learning_rate: 0.05
-      l2_regularization: 0.0
+  - mlp-default
 
 training:
   rounds: 200
@@ -66,18 +64,19 @@ explain_eval:
   random_state: 42
   skip_existing: true
   force: false
-  plan_dir: job_launcher/plans
+  plan_dir: plans/{dataset}/{model_name}
   slurm:
     enabled: true
     submit: false
-    script_dir: job_launcher/slurm
-    log_dir: logs
+    script_dir: plans/{dataset}/{model_name}/slurm
+    log_dir: logs/cencus_income
     job_name: explain-eval
     array_concurrency: 32
-    module_load: python/3.14.0
-    venv_path: .venv/bin/activate
+    module_load: python/3.12.3
+    venv_path: .venv312/bin/activate
     sbatch_args:
-      - --partition=main
+      - --partition=gpu
+      - --gres=gpu:tesla:1
       - --cpus-per-task=4
-      - --mem=16G
+      - --mem=32G
       - --time=06:00:00
