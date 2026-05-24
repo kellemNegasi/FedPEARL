@@ -17,12 +17,12 @@ Implemented now:
 - recommender-context feature preparation from aggregated explain/evaluate artifacts
 - simulated pairwise preference labeling with bundled persona configs
 - federated pairwise-logistic recommender training and evaluation
+- clustered recommender training with configurable warmup, optional PCA, and secure K-means options
 
 Not implemented yet:
 
 - human-subject preference collection or serving infrastructure
 - recommender model families beyond the current pairwise logistic FedAvg baseline
-- clustering
 
 ## Repository Layout
 
@@ -886,6 +886,7 @@ The positional arguments in clustered mode are:
 Notes:
 
 - `scripts/submit_pipeline.sh` also uses a hardcoded `RUN_IDS` list.
+- PCA does not have a secure implementation yet. For secure clustered training, `CLUSTERING_ENABLE_PCA=0` is the current default and should remain disabled unless you are explicitly running a non-secure PCA path.
 - The submitted `scripts/recommender_pipeline.sbatch` sets `FORCE_TRAINING=1` internally for recommender training, so recommender model outputs are overwritten on rerun unless you change that script.
 - `SKIP_LABELING=1` is useful when labels already exist and you only want to retrain or reevaluate the recommender.
 
